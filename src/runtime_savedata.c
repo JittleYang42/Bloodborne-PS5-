@@ -16,7 +16,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #ifndef _WIN32
+#ifndef __PROSPERO__
 #include <ftw.h>
+#endif
 #endif
 
 #define ERR_PARAMETER ((int32_t)0x809F0000)
@@ -137,6 +139,23 @@ static int read_param(const char *meta, Param *p) {
 }
 #ifdef _WIN32
 static void remove_tree(const char *path) { compat_remove_tree(path); }
+#elif defined(__PROSPERO__)
+/* bbport PS5: no nftw in the console's libc; depth-first with opendir/readdir. */
+static void remove_tree(const char *path) {
+    DIR *d=opendir(path);
+    if (d) {
+        for (struct dirent *e; (e=readdir(d));) {
+            if (!strcmp(e->d_name,".") || !strcmp(e->d_name,"..")) continue;
+            char child[4096];
+            snprintf(child,sizeof(child),"%s/%s",path,e->d_name);
+            struct stat st;
+            if (!lstat(child,&st) && S_ISDIR(st.st_mode)) remove_tree(child);
+            else remove(child);
+        }
+        closedir(d);
+    }
+    rmdir(path);
+}
 #else
 static int remove_entry(const char *path, const struct stat *st, int flag, struct FTW *ftw) {
     (void)st; (void)flag; (void)ftw; return remove(path);

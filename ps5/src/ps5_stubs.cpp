@@ -44,5 +44,12 @@ bool AvPlayerSource::GetVideoData(AvPlayerFrameInfo&) { return false; }
 bool AvPlayerSource::GetVideoData(AvPlayerFrameInfoEx&) { return false; }
 u64 AvPlayerSource::CurrentTime() { return 0; }
 bool AvPlayerSource::IsActive() { return false; }
+// The deleters the source's FFmpeg handles name; nothing is ever allocated in this build.
+void AvPlayerSource::ReleaseAVPacket(AVPacket*) {}
+void AvPlayerSource::ReleaseAVFrame(AVFrame*) {}
+void AvPlayerSource::ReleaseAVCodecContext(AVCodecContext*) {}
+void AvPlayerSource::ReleaseSWRContext(SwrContext*) {}
+void AvPlayerSource::ReleaseSWSContext(SwsContext*) {}
+void AvPlayerSource::ReleaseAVFormatContext(AVFormatContext*) {}
 
 } // namespace Libraries::AvPlayer

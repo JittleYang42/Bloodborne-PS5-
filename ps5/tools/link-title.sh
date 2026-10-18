@@ -46,6 +46,21 @@ stub libSceAgcDriver vendor/ps5/sdk/stubs/agc_driver_canary_link_stub.c
 source "$vulkan/tools/radv-link.sh"
 radv_link_recipe "$vulkan" "$sdk" "$archive" || exit 2
 
+# libc names RADV imports that this SDK pin's platform layer does not bind: ps5/src/ps5_platform.c's,
+# kept local (a title exports nothing).
+platform_symbols=$("$sdk/bin/llvm-nm" --defined-only "$sdk/target/lib/libps5platform.a" 2>/dev/null || true)
+extra_map="$work/link/bbport-local.map"
+printf '{\n    local:\n' > "$extra_map"
+for name in mkstemp readlink; do
+    if ! grep -q " T ps5_$name$" <<<"$platform_symbols" &&
+            [[ " ${radv_link_flags[*]} " != *" --defsym=$name="* ]]; then
+        radv_link_flags+=("--defsym=$name=bb_ps5_$name")
+        printf '        %s;\n' "$name" >> "$extra_map"
+    fi
+done
+printf '};\n' >> "$extra_map"
+radv_link_flags+=(--version-script "$extra_map")
+
 # This build's static libraries (the GPU library, fmt, Zydis, sirit, FSR, LibAtrac9, ...).
 mapfile -t libraries < <(find "$work" -name '*.a' -not -path "$work/link/*" | sort)
 echo "link-title.sh: ${#objects[@]} objects, ${#libraries[@]} libraries" >&2

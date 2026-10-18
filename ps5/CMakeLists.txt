@@ -143,6 +143,7 @@ target_include_directories(bbgpu PRIVATE ${GPU}/shim ${GPU}/shadps4 ${SHADER_INC
     ${GPU}/third_party/imgui ${GPU}/third_party/imgui/backends ${GPU}/third_party/xbyak ${GPU}
     ${ROOT})
 target_compile_definitions(bbgpu PRIVATE BOOST_ASIO_STANDALONE NDEBUG IMGUI_IMPL_VULKAN_NO_PROTOTYPES
+    IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS
     BB_FONT_PATH="${GPU}/third_party/fonts/DejaVuSans.ttf")
 target_compile_options(bbgpu PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers
     -Wno-unknown-warning-option "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/src/bb_ps5_compat.h")

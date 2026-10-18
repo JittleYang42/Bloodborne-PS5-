@@ -159,3 +159,13 @@ void *bb_ps5_low_map(size_t size, int prot) {
     memset(at, 0, size); /* direct memory comes back with what it held */
     return at;
 }
+
+/* ---- libc names no module a title loads exports (RADV imports them) ----
+ * Bound by ps5/tools/link-title.sh (--defsym) where the SDK's platform layer has no ps5_ one. */
+int ps5_mkstemps(char *path, int suffix_length);
+int bb_ps5_mkstemp(char *path) { return ps5_mkstemps(path, 0); }
+ssize_t bb_ps5_readlink(const char *path, char *buffer, size_t size) {
+    (void)path; (void)buffer; (void)size;
+    errno = EINVAL; /* nothing on the console is a symbolic link RADV asks about */
+    return -1;
+}
