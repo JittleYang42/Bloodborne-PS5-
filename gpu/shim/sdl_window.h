@@ -10,7 +10,7 @@ struct SDL_Window;
 
 namespace Frontend {
 
-enum class WindowSystemType : u8 { Headless, Windows, X11, Wayland, Metal };
+enum class WindowSystemType : u8 { Headless, Windows, X11, Wayland, Metal, Display /* bbport PS5: VK_KHR_display on VideoOut */ };
 
 struct WindowSystemInfo {
     void* display_connection = nullptr;

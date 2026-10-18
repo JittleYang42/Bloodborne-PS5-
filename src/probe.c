@@ -13,6 +13,22 @@
 #endif
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__PROSPERO__)
+#include <sys/mman.h>
+#include <unistd.h>
+#include <signal.h>
+#include <ucontext.h>
+#include <fcntl.h>
+#include <dlfcn.h>
+#include <execinfo.h>
+#include <pthread.h>
+#include <ps5platform/context.h>
+#include <ps5platform/kernel.h>
+/* bbport PS5: FreeBSD's machine context (the payload SDK fork's layout). */
+#define UC_RIP(uc) ((uc)->uc_mcontext.mc_rip)
+#define UC_RBP(uc) ((uc)->uc_mcontext.mc_rbp)
+#define UC_RDI(uc) ((uc)->uc_mcontext.mc_rdi)
+#undef round_page /* FreeBSD's machine/param.h macro */
 #else
 #include <sys/mman.h>
 #include <malloc.h>
@@ -24,6 +40,9 @@
 #include <execinfo.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#define UC_RIP(uc) ((uc)->uc_mcontext.gregs[REG_RIP])
+#define UC_RBP(uc) ((uc)->uc_mcontext.gregs[REG_RBP])
+#define UC_RDI(uc) ((uc)->uc_mcontext.gregs[REG_RDI])
 #endif
 
 typedef struct { uint64_t address, size, flags; } Segment;
@@ -68,6 +87,10 @@ static void protect(void *p, size_t size, unsigned flags) {
     else if (flags & 4) mode = PAGE_READONLY;
     if (!VirtualProtect(p, size, mode, &old)) fail("VirtualProtect failed");
     FlushInstructionCache(GetCurrentProcess(), p, size);
+#elif defined(__PROSPERO__)
+    int mode = ((flags & 4) ? PROT_READ : 0) | ((flags & 2) ? PROT_WRITE : 0) | ((flags & 1) ? PROT_EXEC|PROT_READ : 0);
+    int32_t result = sceKernelMprotect(p, size, mode);
+    if (result) { fprintf(stderr, "ERROR: sceKernelMprotect(%p, 0x%zx, %d) returned 0x%08x\n", p, size, mode, (unsigned)result); exit(1); }
 #else
     int mode = ((flags & 4) ? PROT_READ : 0) | ((flags & 2) ? PROT_WRITE : 0) | ((flags & 1) ? PROT_EXEC : 0);
     if (mprotect(p, size, mode)) fail("mprotect failed");
@@ -280,7 +303,7 @@ static void fault(int sig, siginfo_t *info, void *context) {
     }
     /* The process is terminating: dladdr/snprintf are acceptable here. */
     ucontext_t *uc = context;
-    uintptr_t rip = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+    uintptr_t rip = (uintptr_t)UC_RIP(uc);
     char line[512];
     Dl_info where;
     if (rip - (uintptr_t)image < 0x10000000)
@@ -317,18 +340,26 @@ static void write_hex(char *out, uint64_t v) {
 }
 static void dump_frames(ucontext_t *uc) {
     char line[] = "  tid=0000000000000000 rip=0000000000000000 image-relative=0000000000000000 host-relative=0000000000000000\n";
-    uintptr_t rip=(uintptr_t)uc->uc_mcontext.gregs[REG_RIP], rbp=(uintptr_t)uc->uc_mcontext.gregs[REG_RBP];
+    uintptr_t rip=(uintptr_t)UC_RIP(uc), rbp=(uintptr_t)UC_RBP(uc);
     uint64_t tid=(uint64_t)gettid();
     /* First argument register: the lock address when a thread waits on a futex. */
     char arg[]="  tid=0000000000000000 rdi=0000000000000000\n";
-    write_hex(arg+6,tid); write_hex(arg+27,(uint64_t)uc->uc_mcontext.gregs[REG_RDI]);
+    write_hex(arg+6,tid); write_hex(arg+27,(uint64_t)UC_RDI(uc));
     { ssize_t written_=write(2,arg,sizeof(arg)-1); (void)written_; }
     for (int depth=0; depth<24; ++depth) {
         write_hex(line+6,tid); write_hex(line+27,rip); write_hex(line+59,rip-(uintptr_t)image); write_hex(line+90,rip-exe_base);
         { ssize_t written_=write(2,line,sizeof(line)-1); (void)written_; }
         uintptr_t frame[2];
+#ifdef __PROSPERO__
+        /* No process_vm_readv: only frames in mapped memory (queried first) are read. */
+        void *q_start, *q_end; uint32_t q_prot=0;
+        if (!rbp || (rbp&7) || sceKernelQueryMemoryProtection((void *)rbp,&q_start,&q_end,&q_prot) || !(q_prot&1) ||
+            rbp+sizeof(frame)>(uintptr_t)q_end) break;
+        memcpy(frame,(void *)rbp,sizeof(frame));
+#else
         struct iovec local={frame,sizeof(frame)}, remote={(void *)rbp,sizeof(frame)};
         if (!rbp || process_vm_readv(getpid(),&local,1,&remote,1,0)!=(ssize_t)sizeof(frame)) break;
+#endif
         if (frame[0]<=rbp) break;
         rbp=frame[0]; rip=frame[1];
     }
@@ -339,6 +370,11 @@ static void watchdog(int sig, siginfo_t *info, void *context) {
     const char head[]="STOP: watchdog timeout; thread stacks:\n";
     { ssize_t written_=write(2,head,sizeof(head)-1); (void)written_; }
     dump_frames(context);
+#ifdef __PROSPERO__
+    /* No /proc on the console: the thread that took the alarm only. */
+    usleep(100000);
+    _exit(128 + sig);
+#else
     int dir=open("/proc/self/task",O_RDONLY|O_DIRECTORY);
     char buffer[4096];
     long n;
@@ -352,6 +388,7 @@ static void watchdog(int sig, siginfo_t *info, void *context) {
         }
     usleep(100000);
     _exit(128 + sig);
+#endif
 }
 #endif
 /* param.sfo lookup: string or integer value of key, 0 when absent. */
@@ -441,6 +478,11 @@ void runtime_restart(void) {
     CloseHandle(process.hThread); CloseHandle(process.hProcess);
     /* The new launch waits for this process's GPU device to go away (run.py --after). */
     TerminateProcess(GetCurrentProcess(),0);
+#elif defined(__PROSPERO__)
+    /* bbport PS5: no relaunch from inside a title; the new settings apply at the next start. */
+    puts("Runtime: restart requested: close the game and start it again from the home screen");
+    fflush(NULL);
+    _exit(0);
 #else
     puts("Runtime: restarting through run.sh");
     syscall(SYS_close_range, 3u, ~0u, 0u);
@@ -450,9 +492,17 @@ void runtime_restart(void) {
 #endif
 }
 
+#ifdef __PROSPERO__
+/* ps5/src/ps5_main.c builds the command line and calls this. */
+#define main bb_probe_main
+int bb_probe_main(int argc, char **argv);
+#endif
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
-#ifndef _WIN32
+#if defined(__PROSPERO__)
+    /* bbport PS5: the guest range first, before anything else is placed in it. */
+    runtime_memory_reserve();
+#elif !defined(_WIN32)
     /* Keep host heap objects handed to the guest (thread handles, TLS) in the
        non-PIE brk heap, i.e. below 1 TiB: the guest packs pointers into 40 bits. */
     mallopt(M_ARENA_MAX,1);

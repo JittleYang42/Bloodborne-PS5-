@@ -1,0 +1,15 @@
+# bbport PS5: Vulkan is the RADV linked into the title. The headers are Khronos' (ps5/.deps),
+# the commands the trampolines (ps5/tools/gen_vk_trampolines.py); there is no loader library.
+if (NOT TARGET Vulkan::Headers)
+    add_library(Vulkan::Headers INTERFACE IMPORTED GLOBAL)
+    set_target_properties(Vulkan::Headers PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${BB_VULKAN_INCLUDE}")
+endif()
+if (NOT TARGET Vulkan::Vulkan)
+    add_library(Vulkan::Vulkan INTERFACE IMPORTED GLOBAL)
+    set_target_properties(Vulkan::Vulkan PROPERTIES INTERFACE_LINK_LIBRARIES Vulkan::Headers)
+endif()
+set(Vulkan_FOUND TRUE)
+set(Vulkan_INCLUDE_DIRS "${BB_VULKAN_INCLUDE}")
+set(Vulkan_INCLUDE_DIR "${BB_VULKAN_INCLUDE}")
+set(Vulkan_LIBRARIES "")
+set(Vulkan_VERSION "1.4.354")

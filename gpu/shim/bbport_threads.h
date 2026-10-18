@@ -10,6 +10,8 @@
 #ifdef _WIN32
 #include <bit>
 #include <windows.h>
+#elif defined(__PROSPERO__)
+#include <pthread.h>
 #else
 #include <sched.h>
 #include <sys/resource.h>
@@ -30,6 +32,18 @@ inline unsigned Available() {
 /// The calling thread only runs when cores are otherwise idle (lowest Windows priority).
 inline void MakeBackground() {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
+}
+#elif defined(__PROSPERO__)
+/// bbport PS5: the CPU threads a title is given (13 of the console's 16).
+inline unsigned Available() { return std::max(1u, std::thread::hardware_concurrency()); }
+/// No idle scheduling class for a title: helpers run at the lowest priority it may set.
+inline void MakeBackground() {
+    sched_param param{};
+    int policy = 0;
+    if (pthread_getschedparam(pthread_self(), &policy, &param) == 0) {
+        param.sched_priority = sched_get_priority_min(policy);
+        pthread_setschedparam(pthread_self(), policy, &param);
+    }
 }
 #else
 

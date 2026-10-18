@@ -18,6 +18,12 @@
 #include <errno.h>
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__PROSPERO__)
+#include <ps5platform/kernel.h>
+#include <ps5platform/shm.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #else
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -39,7 +45,14 @@ static uint64_t pool_size_bytes(void) {
 #define FLEXIBLE_SIZE (UINT64_C(448) * 1024 * 1024)
 #define PAGE UINT64_C(16384)
 #define USER_MIN UINT64_C(0x1000000000)
+#ifdef __PROSPERO__
+/* bbport PS5: the console grants address space below 1 TiB in pieces; the guest range is the
+ * 64 GiB under the platform heap (0x20_0000_0000), or what of it runtime_memory_reserve gets. */
+static uint64_t user_max=UINT64_C(0x2000000000);
+#define USER_MAX user_max
+#else
 #define USER_MAX UINT64_C(0xfc00000000)
+#endif
 #define LIMIT 4096
 #define INVALID ((int32_t)UINT32_C(0x80020016))
 #define NO_MEMORY ((int32_t)UINT32_C(0x8002000c))
@@ -77,7 +90,7 @@ static void read_lock(void) { if (!exclusive_depth) pthread_rwlock_rdlock(&lock)
 static void read_unlock(void) { if (!exclusive_depth) pthread_rwlock_unlock(&lock); }
 static Block blocks[LIMIT];
 static Vma *vmas; static size_t vma_count, vma_capacity;
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__PROSPERO__)
 static int pool_fd=-1;
 #endif
 static unsigned char *backing_base; /* second view of the pool: host writes bypass guest/GPU page protection */
@@ -267,6 +280,83 @@ static int pool(void) {
     backing_base=MapViewOfFile3(section,GetCurrentProcess(),NULL,0,bytes,0,PAGE_READWRITE,NULL,0);
     return backing_base ? 0 : -1;
 }
+#elif defined(__PROSPERO__)
+/* ---- host mappings (PS5) ----
+ * One direct-memory allocation (ps5_shm) backs the guest's direct and flexible memory, as the
+ * memfd does on Linux: [0,POOL_SIZE) direct, [POOL_SIZE,+FLEX_SPAN) flexible. Guest mappings are
+ * views of it at fixed addresses inside the reserved guest range; an unmapped or PROT_NONE-
+ * reserved part is reserved again at once so nothing else is placed there. */
+static struct ps5_shm shm;
+static uintptr_t reserved_base;
+static void ps5_fail(const char *what, uintptr_t address, uint64_t size, int32_t result) {
+    fprintf(stderr,"STOP: %s failed at %p (+0x%" PRIx64 "), result 0x%08x\n",what,(void *)address,size,(unsigned)result);
+    exit(21);
+}
+void runtime_memory_reserve(void) {
+    if (reserved_base) return;
+    for (uint64_t span=UINT64_C(0x1000000000); span>=UINT64_C(0x200000000); span/=2) {
+        void *at=(void *)(uintptr_t)USER_MIN;
+        int32_t result=sceKernelReserveVirtualRange(&at,span,0,PS5_KERNEL_DIRECT_ALIGNMENT);
+        if (result==0 && (uintptr_t)at==USER_MIN) {
+            reserved_base=USER_MIN; user_max=USER_MIN+span;
+            printf("Runtime: guest address range 0x%" PRIx64 "-0x%" PRIx64 " (%" PRIu64 " GiB) reserved\n",
+                   (uint64_t)USER_MIN,(uint64_t)user_max,span>>30);
+            return;
+        }
+        if (result==0) sceKernelMunmap(at,span);
+        fprintf(stderr,"Runtime: %" PRIu64 " GiB at 0x%" PRIx64 " not granted (0x%08x, placed %p)\n",
+                span>>30,(uint64_t)USER_MIN,(unsigned)result,at);
+    }
+    ps5_fail("reserving the guest address range",USER_MIN,0,-1);
+}
+static int pool(void) {
+    if (backing_base) return 0;
+    runtime_memory_reserve();
+    int result=ps5_shm_create(POOL_SIZE+FLEX_SPAN,&shm);
+    if (result) { fprintf(stderr,"Runtime: cannot allocate %" PRIu64 " MiB of direct memory for the guest (0x%08x)\n",(POOL_SIZE+FLEX_SPAN)>>20,(unsigned)result); return -1; }
+    void *view=NULL;
+    /* The host's own view, outside the guest range (the hint is above the RADV region). */
+    result=ps5_shm_map(&shm,0,shm.bytes,(void *)(uintptr_t)UINT64_C(0x8000000000),PS5_SHM_READ|PS5_SHM_WRITE,0,&view);
+    if (result) { fprintf(stderr,"Runtime: cannot map the guest memory backing view (0x%08x)\n",(unsigned)result); return -1; }
+    backing_base=view;
+    printf("Runtime: guest memory %" PRIu64 " MiB in direct memory at 0x%" PRIx64 ", host view %p\n",
+           shm.bytes>>20,(uint64_t)shm.direct_start,view);
+    return 0;
+}
+static int keep_reserved(uintptr_t address, uint64_t size) {
+    void *at=(void *)address;
+    int32_t result=sceKernelReserveVirtualRange(&at,size,PS5_KERNEL_MAP_FIXED,PS5_KERNEL_PAGE_SIZE);
+    if (result || (uintptr_t)at!=address) { fprintf(stderr,"Runtime: re-reserving %p (+0x%" PRIx64 ") failed (0x%08x)\n",(void *)address,size,(unsigned)result); return -1; }
+    return 0;
+}
+static int host_map(uintptr_t address, uint64_t size, int prot, int reserved, uint64_t phys) {
+    if (address<reserved_base || address+size>user_max) {
+        fprintf(stderr,"Runtime: guest mapping %p (+0x%" PRIx64 ") outside the reserved range\n",(void *)address,size);
+        return -1;
+    }
+    sceKernelMunmap((void *)address,size);
+    if (reserved) return keep_reserved(address,size);
+    void *at=(void *)address;
+    /* Execute at map time is refused: mapped read-write, then the protection asked for. */
+    int32_t result=sceKernelMapDirectMemory(&at,size,PS5_KERNEL_PROT_CPU_READ|PS5_KERNEL_PROT_CPU_WRITE,
+                                            PS5_KERNEL_MAP_FIXED,shm.direct_start+(int64_t)phys,PS5_KERNEL_PAGE_SIZE);
+    if (result || (uintptr_t)at!=address) {
+        fprintf(stderr,"Runtime: mapping guest memory at %p (+0x%" PRIx64 ", phys 0x%" PRIx64 ") failed (0x%08x)\n",
+                (void *)address,size,phys,(unsigned)result);
+        if (!result) sceKernelMunmap(at,size);
+        keep_reserved(address,size);
+        return -1;
+    }
+    if ((prot&7)!=(PROT_READ|PROT_WRITE) && sceKernelMprotect((void *)address,size,prot&7)) return -1;
+    return 0;
+}
+static int host_unmap(uintptr_t address, uint64_t size) {
+    sceKernelMunmap((void *)address,size);
+    return keep_reserved(address,size);
+}
+static int host_protect(uintptr_t address, uint64_t size, int prot) { return sceKernelMprotect((void *)address,size,prot&7) ? -1 : 0; }
+/* Released pages read as zero when reused, like the memfd's punched holes. */
+static void host_discard(uint64_t phys, uint64_t size) { memset(backing_base+phys,0,size); }
 #else
 /* Direct memory occupies [0,POOL_SIZE) of the memfd, flexible memory [POOL_SIZE,+FLEX_SPAN). */
 static int pool(void) {
@@ -681,7 +771,9 @@ uintptr_t runtime_memory_resolve(const char *name) {
 /* Host-owned memory the guest can see (image, stacks, trampolines) lives in
  * [LOW_MIN, USER_MIN): PS4 code packs pointers into 40-bit fields. */
 #define LOW_MIN UINT64_C(0x0800000000)
+#ifndef __PROSPERO__
 static uintptr_t low_next=LOW_MIN;
+#endif
 void *runtime_low_map(size_t size, int prot) {
     size=align_up(size,PAGE);
     write_lock();
@@ -691,6 +783,10 @@ void *runtime_low_map(size_t size, int prot) {
         p=VirtualAlloc((void *)low_next,size,MEM_RESERVE|MEM_COMMIT,win_prot(prot));
         low_next+=size+UINT64_C(65536); /* unmapped gap catches overruns; allocation granularity */
     }
+    write_unlock();
+    return p;
+#elif defined(__PROSPERO__)
+    void *p=bb_ps5_low_map(size,prot);
     write_unlock();
     return p;
 #else

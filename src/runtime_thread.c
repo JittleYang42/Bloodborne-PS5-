@@ -17,6 +17,8 @@
 #include <unistd.h>
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__PROSPERO__)
+#include <sys/mman.h>
 #else
 #include <sys/syscall.h>
 #include <sys/mman.h>
@@ -82,11 +84,19 @@ static void set_gs(void *base) {
     if (!TlsSetValue(tls_slot,base)) { fprintf(stderr,"STOP: TlsSetValue failed (%lu)\n",GetLastError()); exit(21); }
 }
 #define tls_block_alloc(size) _aligned_malloc(size,64)
+#elif defined(__PROSPERO__)
+/* bbport PS5: sysarch(AMD64_SET_GSBASE) on the console's FreeBSD kernel (ps5/src/ps5_gs.c). */
+static void set_gs(void *base) {
+    if (bb_ps5_set_gs(base)) { fputs("STOP: the console refused the guest TCB's GS base\n",stderr); exit(21); }
+}
+#define tls_block_alloc(size) aligned_alloc(64,size)
 #else
 static void set_gs(void *base) {
     if (syscall(SYS_arch_prctl,ARCH_SET_GS,(unsigned long)base)) { perror("STOP: arch_prctl(ARCH_SET_GS)"); exit(21); }
 }
+#ifndef tls_block_alloc
 #define tls_block_alloc(size) aligned_alloc(64,size)
+#endif
 #endif
 /* Build TCB/static TLS for the calling host thread and point GS at it. */
 static void attach(GuestThread *t) {

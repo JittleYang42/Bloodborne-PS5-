@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 // Include the vulkan platform specific header
-#if defined(ANDROID)
+#if defined(__PROSPERO__)
+// bbport PS5: no window system; RADV presents through VK_KHR_display on the console's VideoOut.
+#elif defined(ANDROID)
 #define VK_USE_PLATFORM_ANDROID_KHR
 #elif defined(_WIN64)
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -60,11 +62,82 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugUtilsCallback(
     return VK_FALSE;
 }
 
+#if defined(__PROSPERO__)
+extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL bb_ps5_vkGetInstanceProcAddr(VkInstance instance,
+                                                                                const char* name);
+static vk::SurfaceKHR Ps5CreateDisplaySurface(vk::Instance instance) {
+    VkInstance raw = instance;
+    auto get = [&](const char* name) { return VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr(raw, name); };
+    auto enumerate_devices = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(get("vkEnumeratePhysicalDevices"));
+    auto display_properties = reinterpret_cast<PFN_vkGetPhysicalDeviceDisplayPropertiesKHR>(get("vkGetPhysicalDeviceDisplayPropertiesKHR"));
+    auto mode_properties = reinterpret_cast<PFN_vkGetDisplayModePropertiesKHR>(get("vkGetDisplayModePropertiesKHR"));
+    auto create_surface = reinterpret_cast<PFN_vkCreateDisplayPlaneSurfaceKHR>(get("vkCreateDisplayPlaneSurfaceKHR"));
+    if (!enumerate_devices || !display_properties || !mode_properties || !create_surface) {
+        LOG_CRITICAL(Render_Vulkan, "VK_KHR_display is not available");
+        return {};
+    }
+    u32 count = 1;
+    VkPhysicalDevice gpu{};
+    if (enumerate_devices(raw, &count, &gpu) < 0 || !count) return {};
+    count = 1;
+    VkDisplayPropertiesKHR display{};
+    if (display_properties(gpu, &count, &display) < 0 || !count) {
+        LOG_CRITICAL(Render_Vulkan, "No display");
+        return {};
+    }
+    u32 modes = 0;
+    mode_properties(gpu, display.display, &modes, nullptr);
+    std::vector<VkDisplayModePropertiesKHR> mode_list(modes);
+    mode_properties(gpu, display.display, &modes, mode_list.data());
+    const char* wanted_hz = std::getenv("BB_VBLANK_HZ");
+    const u32 want_refresh = wanted_hz && std::atoi(wanted_hz) >= 100 ? 120000 : 60000;
+    const VkDisplayModePropertiesKHR* best = nullptr;
+    for (const auto& mode : mode_list) {
+        const auto& p = mode.parameters;
+        LOG_INFO(Render_Vulkan, "Display mode {}x{} @ {} mHz", p.visibleRegion.width, p.visibleRegion.height, p.refreshRate);
+        auto score = [&](const VkDisplayModePropertiesKHR& m) {
+            const auto& q = m.parameters;
+            const u64 area = u64(q.visibleRegion.width) * q.visibleRegion.height;
+            const u64 refresh_fit = q.refreshRate + 500 >= want_refresh ? 1 : 0;
+            return (refresh_fit << 62) | (area << 20) | std::min<u32>(q.refreshRate, 0xfffff);
+        };
+        if (!best || score(mode) > score(*best)) best = &mode;
+    }
+    if (!best) {
+        LOG_CRITICAL(Render_Vulkan, "The display reports no modes");
+        return {};
+    }
+    const VkDisplaySurfaceCreateInfoKHR info{
+        .sType = VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR,
+        .displayMode = best->displayMode,
+        .planeIndex = 0,
+        .planeStackIndex = 0,
+        .transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+        .globalAlpha = 1.0f,
+        .alphaMode = VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR,
+        .imageExtent = best->parameters.visibleRegion,
+    };
+    VkSurfaceKHR result{};
+    if (create_surface(raw, &info, nullptr, &result) < 0) {
+        LOG_CRITICAL(Render_Vulkan, "vkCreateDisplayPlaneSurfaceKHR failed");
+        return {};
+    }
+    LOG_INFO(Render_Vulkan, "Display surface {}x{} @ {} mHz", best->parameters.visibleRegion.width,
+             best->parameters.visibleRegion.height, best->parameters.refreshRate);
+    return vk::SurfaceKHR{result};
+}
+#endif
+
 vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::WindowSDL& emu_window) {
     const auto& window_info = emu_window.GetWindowInfo();
     vk::SurfaceKHR surface{};
 
-#if defined(VK_USE_PLATFORM_WIN32_KHR)
+#if defined(__PROSPERO__)
+    // bbport PS5: the display's first plane, in its preferred (largest, then fastest) mode.
+    if (window_info.type == Frontend::WindowSystemType::Display) {
+        surface = Ps5CreateDisplaySurface(instance);
+    }
+#elif defined(VK_USE_PLATFORM_WIN32_KHR)
     if (window_info.type == Frontend::WindowSystemType::Windows) {
         const vk::Win32SurfaceCreateInfoKHR win32_ci = {
             .hinstance = nullptr,
@@ -172,7 +245,11 @@ std::vector<const char*> GetInstanceExtensions(Frontend::WindowSystemType window
     switch (window_type) {
     case Frontend::WindowSystemType::Headless:
         break;
-#if defined(VK_USE_PLATFORM_WIN32_KHR)
+#if defined(__PROSPERO__)
+    case Frontend::WindowSystemType::Display:
+        extensions.push_back(VK_KHR_DISPLAY_EXTENSION_NAME);
+        break;
+#elif defined(VK_USE_PLATFORM_WIN32_KHR)
     case Frontend::WindowSystemType::Windows:
         extensions.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
         break;
@@ -271,9 +348,14 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
     setenv("VK_DRIVER_FILES", icd_path.c_str(), true);
 #endif
 
+#if defined(__PROSPERO__)
+    // bbport PS5: RADV is linked into the title (ps5/src/vk_trampolines.c wraps its ICD entry).
+    VULKAN_HPP_DEFAULT_DISPATCHER.init(&bb_ps5_vkGetInstanceProcAddr);
+#else
     static vk::detail::DynamicLoader dl;
     VULKAN_HPP_DEFAULT_DISPATCHER.init(
         dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr"));
+#endif
 
     const auto [available_version_result, available_version] =
         VULKAN_HPP_DEFAULT_DISPATCHER.vkEnumerateInstanceVersion

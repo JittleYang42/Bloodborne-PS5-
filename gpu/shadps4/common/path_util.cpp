@@ -87,6 +87,12 @@ static std::optional<std::filesystem::path> GetBundleParentDirectory() {
 static auto UserPaths = [] {
     // bbport: the port keeps GPU caches where BB_GPU_USER_DIR points.
     const char* port_dir = std::getenv("BB_GPU_USER_DIR");
+#ifdef __PROSPERO__
+    // bbport PS5: this runs before main reads the settings; the title folder holds the caches.
+    if (!port_dir) port_dir = "/app0/bbport/user";
+    std::error_code ignored;
+    std::filesystem::create_directories(port_dir, ignored);
+#endif
     auto user_dir = port_dir ? std::filesystem::path(port_dir) : std::filesystem::current_path() / PORTABLE_DIR;
     if (!std::filesystem::exists(user_dir)) {
         // If it doesn't exist, use the standard path for the platform instead.

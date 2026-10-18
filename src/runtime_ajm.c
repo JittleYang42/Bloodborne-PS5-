@@ -69,7 +69,15 @@ typedef struct {
 typedef struct { int used, registered[24]; Instance instances[MAX_INSTANCES+1]; } Context;
 typedef struct { int used, context, canceled; } Batch;
 
+#ifdef __PROSPERO__
+/* bbport PS5: FreeBSD's libthr has no static recursive initializer; made on first use. */
+static pthread_mutex_t lock;
+static pthread_once_t lock_once=PTHREAD_ONCE_INIT;
+static void lock_init(void) { bb_ps5_recursive_mutex(&lock); }
+#define pthread_mutex_lock(m) (pthread_once(&lock_once,lock_init),pthread_mutex_lock(m))
+#else
 static pthread_mutex_t lock=PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+#endif
 static Context *contexts[MAX_CONTEXTS+1];
 static Batch batches[MAX_BATCHES];
 static size_t jobs_run, frames_decoded, batches_run;

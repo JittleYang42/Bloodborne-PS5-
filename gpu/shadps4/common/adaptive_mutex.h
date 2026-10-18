@@ -9,7 +9,7 @@
 
 namespace Common {
 
-#ifdef PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP
+#if defined(PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP) && !defined(__PROSPERO__) // bbport PS5: no lazy static mutexes
 class AdaptiveMutex {
 public:
     AdaptiveMutex() = default;

@@ -1,0 +1,43 @@
+Bloodborne (bbport) for PS5 - test build
+========================================
+
+What this is
+- The PC port (bbport) built for the PS5's own CPU and GPU: the game's original x86-64 code
+  runs directly on the console, its graphics go through shadPS4's GPU core to Vulkan, which is
+  the RADV driver from PS5_Vulkan linked into this title. It runs as a homebrew title folder,
+  like the other PS5_Vulkan titles.
+- Default: the scene renders at 1916x1078 and FSR 3.1 upscales it to 3840x2160, 60 FPS.
+  BB_FPS=uncap in bbport/bbport-ps5.env tries the uncapped patch with a 120 Hz display.
+- Not in this build: online play, the intro and ending movies (no video decoder yet: they are
+  skipped), DLSS/FSR 4 and frame generation, keyboard and mouse.
+
+Folder layout (/data/homebrew/PPSA99173/ on the console)
+  eboot.bin  sce_sys/  sce_module/libc.prx    the title
+  CUSA03173/                                   YOUR game dump, copied in (eboot.bin, sce_sys,
+                                               sce_module, dvdroot_ps4, ...; version 1.09)
+  bbport/boot-linked.bin, content.bin          made on your PC from that dump
+  bbport/patches-60.bin, patches-uncap.bin     the FPS/resolution patches
+  bbport/bbport-ps5.env, bbport.ini, input.ini settings
+  bbport/user/                                 saves and shader caches (made on first start)
+  bbport/last_run.log                          the log of the last start (previous_run.log before it)
+
+Installing
+1. Copy this whole PPSA99173 folder to /data/homebrew/PPSA99173/ over FTP (or with
+   PS5_Vulkan's tools/deploy-title-folder.py PPSA99173 --host <console IP>).
+2. Copy your CUSA03173 folder into it: /data/homebrew/PPSA99173/CUSA03173/ (about 31 GB; the
+   folder with eboot.bin directly inside).
+3. Let your homebrew setup register the folder as it does for the other titles
+   (ShadowMountPlus scans /data/homebrew), and start "Bloodborne (bbport PS5)".
+4. Saves from the PC: copy bbport-windows/user/savedata/ to bbport/user/savedata/ (optional).
+
+Testing
+- The first start compiles shaders: expect stutter and long loads for the first minutes.
+- L3+R3 opens the port's menu (upscaler, sharpness, effects).
+- After each test, send bbport/last_run.log (get it over FTP). If the title closes or hangs,
+  the log shows how far it got. klog has the same lines, prefixed [bbport].
+
+Settings (bbport/bbport-ps5.env)
+- BB_FPS=60 or uncap
+- BB_DISPLAY_RES=1920x1080 for a 1080p TV (the output then is 1080p)
+- A different render or output resolution needs new patches: ps5/tools/prepare-game.sh with
+  BB_PS5_RENDER_RES / BB_PS5_OUTPUT_RES on the PC.

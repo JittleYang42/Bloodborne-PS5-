@@ -68,6 +68,12 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
         window_info.render_surface = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
     } else
 #endif
+#ifdef __PROSPERO__
+    // bbport PS5: ps5/sdl3/sdl3_ps5.c's driver; the swapchain goes on the display (VK_KHR_display).
+    if (driver && !std::strcmp(driver, "ps5")) {
+        window_info.type = WindowSystemType::Display;
+    } else
+#endif
     if (driver && !std::strcmp(driver, "x11")) {
         window_info.type = WindowSystemType::X11;
         window_info.display_connection = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
