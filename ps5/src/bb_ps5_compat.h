@@ -4,6 +4,12 @@
 #ifdef __PROSPERO__
 #include "../../src/compat_ps5.h"
 #endif
+#if defined(__PROSPERO__) && defined(__cplusplus)
+// Boost.Asio uses std::nested_exception and std::terminate after including only <stdexcept>,
+// which libc++ 18 no longer makes include <exception>.
+#include <exception>
+#include <stdexcept>
+#endif
 
 #if defined(__PROSPERO__) && defined(__cplusplus)
 // libc++ 18 (the payload SDK's) has no std::atomic_ref: the members the GPU library uses, on the
