@@ -93,6 +93,12 @@ extern "C" void bbgpu_dump_guest_writes(void* ucontext) {
     // The loader passes EXCEPTION_POINTERS (see signal_context.cpp).
     const CONTEXT* c = static_cast<const EXCEPTION_POINTERS*>(ucontext)->ContextRecord;
     const std::uint64_t regs[] = {c->Rax, c->Rbx, c->Rcx, c->Rdx, c->Rsi, c->Rdi, c->R14, c->R15};
+#elif defined(__PROSPERO__)
+    // bbport PS5: FreeBSD's machine context.
+    const auto& m = static_cast<const ucontext_t*>(ucontext)->uc_mcontext;
+    const std::uint64_t regs[] = {std::uint64_t(m.mc_rax), std::uint64_t(m.mc_rbx), std::uint64_t(m.mc_rcx),
+                                  std::uint64_t(m.mc_rdx), std::uint64_t(m.mc_rsi), std::uint64_t(m.mc_rdi),
+                                  std::uint64_t(m.mc_r14), std::uint64_t(m.mc_r15)};
 #else
     const auto* uc = static_cast<const ucontext_t*>(ucontext);
     const auto* g = uc->uc_mcontext.gregs;
