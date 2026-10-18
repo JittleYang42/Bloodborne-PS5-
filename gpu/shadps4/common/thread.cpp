@@ -39,6 +39,10 @@
 #define cpu_set_t cpuset_t
 #endif
 
+#ifdef __PROSPERO__
+extern "C" void bb_ps5_register_host_thread(const char* name);
+#endif
+
 namespace Common {
 
 #ifdef __APPLE__
@@ -195,6 +199,10 @@ void SetCurrentThreadName(const char* name) {
     pthread_setname_np(name);
 #elif defined(__Bitrig__) || defined(__DragonFly__) || defined(__FreeBSD__) || defined(__OpenBSD__)
     pthread_set_name_np(pthread_self(), name);
+#ifdef __PROSPERO__
+    // bbport PS5: the heartbeat's stack dumps include the GPU library's threads by these names.
+    bb_ps5_register_host_thread(name);
+#endif
 #elif defined(__NetBSD__)
     pthread_setname_np(pthread_self(), "%s", (void*)name);
 #elif defined(__linux__)

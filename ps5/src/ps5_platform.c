@@ -18,6 +18,7 @@
 #include <string.h>
 #include <machine/sysarch.h>
 #include <unistd.h>
+#include <signal.h>
 
 /* ---- thread ids, randomness, mutexes ---- */
 int bb_ps5_gettid(void) { return pthread_getthreadid_np(); }
@@ -168,4 +169,32 @@ ssize_t bb_ps5_readlink(const char *path, char *buffer, size_t size) {
     (void)path; (void)buffer; (void)size;
     errno = EINVAL; /* nothing on the console is a symbolic link RADV asks about */
     return -1;
+}
+
+/* ---- named host threads (the GPU library's), for the heartbeat's stack dumps ---- */
+#define HOST_THREADS 64
+static struct { pthread_t thread; char name[48]; } host_threads[HOST_THREADS];
+static int host_thread_count;
+static pthread_mutex_t host_thread_lock = PTHREAD_MUTEX_INITIALIZER;
+void bb_ps5_register_host_thread(const char *name) {
+    pthread_mutex_lock(&host_thread_lock);
+    int slot = -1;
+    for (int i = 0; i < host_thread_count; ++i)
+        if (pthread_equal(host_threads[i].thread, pthread_self())) slot = i;
+    if (slot < 0 && host_thread_count < HOST_THREADS) slot = host_thread_count++;
+    if (slot >= 0) {
+        host_threads[slot].thread = pthread_self();
+        snprintf(host_threads[slot].name, sizeof(host_threads[slot].name), "%s", name ? name : "?");
+    }
+    pthread_mutex_unlock(&host_thread_lock);
+}
+const char *bb_ps5_host_thread_name(void) {
+    for (int i = 0; i < host_thread_count; ++i)
+        if (pthread_equal(host_threads[i].thread, pthread_self())) return host_threads[i].name;
+    return NULL;
+}
+void bb_ps5_signal_host_threads(int sig) {
+    pthread_mutex_lock(&host_thread_lock);
+    for (int i = 0; i < host_thread_count; ++i) pthread_kill(host_threads[i].thread, sig);
+    pthread_mutex_unlock(&host_thread_lock);
 }

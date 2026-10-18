@@ -60,22 +60,14 @@ static void log_start(void) {
     dup2(log_fd, 2);
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+    /* Does stdio reach the file through descriptor 1? Test 3 showed descriptor 2 does not, and
+     * test 2 that stdout needs reopening by name. */
+    struct stat before, after;
+    fstat(log_fd, &before);
     printf("PS5: log open\n");
     fflush(stdout);
-    /* Crash reports (src/probe.c) use write(2): check that descriptor 2 is the log. */
-    {
-        struct stat before, after;
-        fstat(log_fd, &before);
-        ssize_t w = write(2, "PS5: descriptor 2 writes to the log\n", 36); (void)w;
-        fstat(log_fd, &after);
-        if (after.st_size == before.st_size) {
-            static const char text[] = "PS5: descriptor 2 does not reach the log: crash reports may be lost\n";
-            w = write(log_fd, text, sizeof(text) - 1);
-        }
-    }
-    /* If the console's stdio does not write through descriptor 1, reopen the streams by name. */
-    struct stat st;
-    if (fstat(log_fd, &st) == 0 && st.st_size == 0) {
+    fstat(log_fd, &after);
+    if (after.st_size == before.st_size) {
         freopen(PORT "/last_run.log", "a", stdout);
         freopen(PORT "/last_run.log", "a", stderr);
         setvbuf(stdout, NULL, _IOLBF, 0);
@@ -93,6 +85,7 @@ static void log_start(void) {
 void runtime_report(void);
 void runtime_thread_signal_all(int sig);
 int bb_ps5_gpu_stats(char *out, unsigned long size);
+void bb_ps5_signal_host_threads(int sig);
 static void beat(const char *format, ...) __attribute__((format(printf, 1, 2)));
 static void beat(const char *format, ...) {
     char line[768];
@@ -124,6 +117,9 @@ static void *heartbeat_main(void *unused) {
             fflush(stdout);
             beat("PS5: ---- guest thread stacks at %u s ----", seconds);
             runtime_thread_signal_all(SIGUSR2);
+            sleep(1);
+            beat("PS5: ---- GPU library thread stacks at %u s ----", seconds);
+            bb_ps5_signal_host_threads(SIGUSR2);
             sleep(2);
             beat("PS5: ---- end of state ----");
         }

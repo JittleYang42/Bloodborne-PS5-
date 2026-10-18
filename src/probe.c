@@ -342,17 +342,21 @@ static void write_hex(char *out, uint64_t v) {
     const char digits[] = "0123456789abcdef";
     for (int i = 0; i < 16; ++i) out[i] = digits[(v >> (60 - i * 4)) & 15];
 }
-static void dump_frames(ucontext_t *uc) {
+/* The frames of one thread into `out` (whole lines), written at once by the caller: dumps of
+ * many threads taken together stay readable. */
+static size_t format_frames(ucontext_t *uc, char *out, size_t size) {
     char line[] = "  tid=0000000000000000 rip=0000000000000000 image-relative=0000000000000000 host-relative=0000000000000000\n";
     uintptr_t rip=(uintptr_t)UC_RIP(uc), rbp=(uintptr_t)UC_RBP(uc);
     uint64_t tid=(uint64_t)gettid();
+    size_t n=0;
     /* First argument register: the lock address when a thread waits on a futex. */
     char arg[]="  tid=0000000000000000 rdi=0000000000000000\n";
     write_hex(arg+6,tid); write_hex(arg+27,(uint64_t)UC_RDI(uc));
-    { ssize_t written_=write(BB_CRASH_FD,arg,sizeof(arg)-1); (void)written_; }
+    if (n+sizeof(arg)-1<=size) { memcpy(out+n,arg,sizeof(arg)-1); n+=sizeof(arg)-1; }
     for (int depth=0; depth<24; ++depth) {
         write_hex(line+6,tid); write_hex(line+27,rip); write_hex(line+59,rip-(uintptr_t)image); write_hex(line+90,rip-exe_base);
-        { ssize_t written_=write(BB_CRASH_FD,line,sizeof(line)-1); (void)written_; }
+        if (n+sizeof(line)-1>size) break;
+        memcpy(out+n,line,sizeof(line)-1); n+=sizeof(line)-1;
         uintptr_t frame[2];
 #ifdef __PROSPERO__
         /* No process_vm_readv: only frames in mapped memory (queried first) are read. */
@@ -367,13 +371,24 @@ static void dump_frames(ucontext_t *uc) {
         if (frame[0]<=rbp) break;
         rbp=frame[0]; rip=frame[1];
     }
+    return n;
+}
+static void dump_frames(ucontext_t *uc) {
+    char out[4096];
+    size_t n=format_frames(uc,out,sizeof(out));
+    ssize_t w=write(BB_CRASH_FD,out,n); (void)w;
 }
 const char *runtime_thread_dump_name(void);
 static void thread_dump(int sig, siginfo_t *info, void *context) {
     (void)sig; (void)info;
+    char out[4096];
     const char *name=runtime_thread_dump_name();
-    { ssize_t w=write(BB_CRASH_FD,"thread ",7); w=write(BB_CRASH_FD,name,strlen(name)); w=write(BB_CRASH_FD,":\n",2); (void)w; }
-    dump_frames(context);
+    size_t n=0;
+    for (const char *p="thread "; *p && n<128;) out[n++]=*p++;
+    for (const char *p=name; *p && n<160;) out[n++]=*p++;
+    out[n++]=':'; out[n++]='\n';
+    n+=format_frames(context,out+n,sizeof(out)-n);
+    ssize_t w=write(BB_CRASH_FD,out,n); (void)w;
 }
 static void watchdog(int sig, siginfo_t *info, void *context) {
     (void)info;

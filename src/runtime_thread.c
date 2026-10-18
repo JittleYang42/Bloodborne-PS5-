@@ -418,7 +418,17 @@ uintptr_t runtime_thread_resolve(const char *name) {
 #ifndef _WIN32
 /* bbport PS5 diagnostics (ps5/src/ps5_main.c's heartbeat): a signal to every live guest thread. */
 #include <signal.h>
-const char *runtime_thread_dump_name(void) { return current ? current->name : "(host thread)"; }
+#ifdef __PROSPERO__
+const char *bb_ps5_host_thread_name(void);
+#endif
+const char *runtime_thread_dump_name(void) {
+    if (current) return current->name;
+#ifdef __PROSPERO__
+    const char *host=bb_ps5_host_thread_name();
+    if (host) return host;
+#endif
+    return "(host thread)";
+}
 void runtime_thread_signal_all(int sig) {
     pthread_mutex_lock(&lock);
     for (GuestThread *t=threads; t; t=t->next)
