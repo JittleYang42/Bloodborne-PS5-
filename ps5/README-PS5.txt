@@ -38,6 +38,12 @@ Testing
 
 Settings (bbport/bbport-ps5.env)
 - BB_FPS=60 or uncap
-- BB_DISPLAY_RES=1920x1080 for a 1080p TV (the output then is 1080p)
-- A different render or output resolution needs new patches: ps5/tools/prepare-game.sh with
-  BB_PS5_RENDER_RES / BB_PS5_OUTPUT_RES on the PC.
+- BB_OUTPUT_RES=auto (default): FSR upscales to whatever the TV/monitor runs at, so 1080p,
+  1440p and 4K displays each get their own resolution. Or set it yourself:
+  BB_OUTPUT_RES=2560x1440 (1440p), 1920x1080 (1080p), 3840x2160 (4K). A lower output than
+  the display's is quicker and is stretched to the screen.
+- BB_DISPLAY_RES=2560x1440 picks that display mode if the display offers several.
+- The scene itself renders at 1916x1078 for every output (the patches); a different render
+  resolution needs new patches: ps5/tools/prepare-game.sh with BB_PS5_RENDER_RES on the PC.
+- The PS5 itself must output the resolution you want: Settings > Screen and Video > Video
+  Output > Resolution (Automatic picks 1440p on a 1440p monitor on current firmware).

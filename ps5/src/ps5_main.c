@@ -153,7 +153,7 @@ static void defaults(void) {
     setenv("BB_GPU_USER_DIR", PORT "/user", 0);
     setenv("BB_UPSCALER", "fsr3", 0);
     /* The PC preparation's patches render the scene at 1916x1078; FSR 3.1 brings it to 4K. */
-    setenv("BB_OUTPUT_RES", "3840x2160", 0);
+    setenv("BB_OUTPUT_RES", "auto", 0); /* the display's resolution (vk_platform.cpp) */
     setenv("BB_RENDER_RES", "1916x1078", 0);
     setenv("BB_AUTO_RENDER_RES", "1", 0);
     /* Uncapped frame rate: the display at 120 Hz where the TV takes it (else 60). */

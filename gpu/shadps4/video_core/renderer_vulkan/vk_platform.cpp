@@ -16,6 +16,8 @@
 #endif
 
 #include <vector>
+#include <cstdio>
+#include <cstring>
 #include <fmt/ranges.h>
 
 #include "common/assert.h"
@@ -91,15 +93,20 @@ static vk::SurfaceKHR Ps5CreateDisplaySurface(vk::Instance instance) {
     mode_properties(gpu, display.display, &modes, mode_list.data());
     const char* wanted_hz = std::getenv("BB_VBLANK_HZ");
     const u32 want_refresh = wanted_hz && std::atoi(wanted_hz) >= 100 ? 120000 : 60000;
+    // BB_DISPLAY_RES=WxH picks that mode when the display offers it (else the largest).
+    u32 want_w = 0, want_h = 0;
+    if (const char* res = std::getenv("BB_DISPLAY_RES")) std::sscanf(res, "%ux%u", &want_w, &want_h);
     const VkDisplayModePropertiesKHR* best = nullptr;
     for (const auto& mode : mode_list) {
         const auto& p = mode.parameters;
-        LOG_INFO(Render_Vulkan, "Display mode {}x{} @ {} mHz", p.visibleRegion.width, p.visibleRegion.height, p.refreshRate);
+        std::printf("Display: mode %ux%u @ %.2f Hz\n", p.visibleRegion.width, p.visibleRegion.height,
+                    p.refreshRate / 1000.0);
         auto score = [&](const VkDisplayModePropertiesKHR& m) {
             const auto& q = m.parameters;
             const u64 area = u64(q.visibleRegion.width) * q.visibleRegion.height;
+            const u64 asked = q.visibleRegion.width == want_w && q.visibleRegion.height == want_h ? 1 : 0;
             const u64 refresh_fit = q.refreshRate + 500 >= want_refresh ? 1 : 0;
-            return (refresh_fit << 62) | (area << 20) | std::min<u32>(q.refreshRate, 0xfffff);
+            return (asked << 63) | (refresh_fit << 62) | (area << 20) | std::min<u32>(q.refreshRate, 0xfffff);
         };
         if (!best || score(mode) > score(*best)) best = &mode;
     }
@@ -122,8 +129,17 @@ static vk::SurfaceKHR Ps5CreateDisplaySurface(vk::Instance instance) {
         LOG_CRITICAL(Render_Vulkan, "vkCreateDisplayPlaneSurfaceKHR failed");
         return {};
     }
-    LOG_INFO(Render_Vulkan, "Display surface {}x{} @ {} mHz", best->parameters.visibleRegion.width,
-             best->parameters.visibleRegion.height, best->parameters.refreshRate);
+    const u32 width = best->parameters.visibleRegion.width, height = best->parameters.visibleRegion.height;
+    std::printf("Display: %ux%u @ %.2f Hz in use\n", width, height, best->parameters.refreshRate / 1000.0);
+    // bbport PS5: BB_OUTPUT_RES=auto (the default) upscales to the display's own resolution:
+    // 1080p, 1440p or 4K, whatever the TV or monitor runs at.
+    const char* output = std::getenv("BB_OUTPUT_RES");
+    if (!output || !*output || !std::strcmp(output, "auto")) {
+        char value[32];
+        std::snprintf(value, sizeof(value), "%ux%u", width, height);
+        setenv("BB_OUTPUT_RES", value, 1);
+        std::printf("Display: output resolution %s (the display's)\n", value);
+    }
     return vk::SurfaceKHR{result};
 }
 #endif

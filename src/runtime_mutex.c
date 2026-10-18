@@ -9,38 +9,61 @@
 #include <time.h>
 typedef struct { int type; } GuestAttr;
 #ifdef __PROSPERO__
-/* bbport PS5: guest mutexes and condition variables without libkernel pthread objects. The game
- * creates tens of thousands (71,684 mutexes and 21,547 condition variables two minutes in);
- * each pthread one took libkernel's internal memory until "[ScePthread/System] Internal Memory
- * is running out" and a failed lock ended the game. These are words in our own memory, waited
- * on with the kernel's _umtx_op (what libkernel's own locks use), which allocates nothing. */
+/* bbport PS5: guest mutexes and condition variables without one libkernel object each. The game
+ * creates tens of thousands (71,684 mutexes and 21,547 condition variables two minutes in); a
+ * pthread object each took libkernel's internal memory until "[ScePthread/System] Internal
+ * Memory is running out" and a failed lock ended the game. Test build 6 waited with _umtx_op
+ * instead, and its waits did not block on the console: workers woke with no job queued and
+ * called garbage. Now every wait parks on one of 256 ordinary pthread mutex/condition pairs,
+ * made once and chosen by the guest object's address: 512 libkernel objects in all. */
 #include <stdatomic.h>
 #include <pthread_np.h>
-#include <sys/umtx.h>
-int _umtx_op(void *obj, int op, unsigned long val, void *uaddr, void *uaddr2);
+#define PARK_BUCKETS 256
+typedef struct { pthread_mutex_t lock; pthread_cond_t wake; } ParkBucket;
+static ParkBucket park[PARK_BUCKETS];
+static pthread_once_t park_once = PTHREAD_ONCE_INIT;
+static void park_init(void) {
+    for (int i = 0; i < PARK_BUCKETS; ++i) {
+        pthread_mutex_init(&park[i].lock, NULL);
+        pthread_cond_init(&park[i].wake, NULL);
+    }
+}
+static ParkBucket *bucket_of(const void *object) {
+    pthread_once(&park_once, park_init);
+    uintptr_t key = (uintptr_t)object >> 4;
+    key ^= key >> 9; key ^= key >> 17;
+    return &park[key % PARK_BUCKETS];
+}
 typedef struct {
     _Atomic uint32_t state;   /* 0 free, 1 locked, 2 locked with waiters */
     _Atomic int owner;        /* thread id, 0 when free */
     uint32_t recursion;       /* extra holds of a recursive mutex */
     int type;                 /* 1 errorcheck (default), 2 recursive, 3 normal, 4 adaptive */
 } GuestMutex;
-typedef struct { _Atomic uint32_t sequence; } GuestCond;
+/* Waiters and pending wakeups, both under the bucket's lock: a signal wakes exactly one waiter
+ * that was waiting when it came, a broadcast all of them, and nothing wakes a waiter otherwise. */
+typedef struct { uint32_t waiters, tokens; } GuestCond;
 static int self_id(void) { return pthread_getthreadid_np(); }
-static void futex_wait(_Atomic uint32_t *word, uint32_t value, const struct timespec *relative) {
-    _umtx_op((void *)word, UMTX_OP_WAIT_UINT_PRIVATE, value,
-             relative ? (void *)(uintptr_t)sizeof(*relative) : NULL, (void *)relative);
+/* Blocks while *word == value (or until `end`, CLOCK_REALTIME); may return early. */
+static void word_wait(_Atomic uint32_t *word, uint32_t value, const struct timespec *end) {
+    ParkBucket *b = bucket_of(word);
+    pthread_mutex_lock(&b->lock);
+    if (atomic_load(word) == value) {
+        if (end) pthread_cond_timedwait(&b->wake, &b->lock, end);
+        else pthread_cond_wait(&b->wake, &b->lock);
+    }
+    pthread_mutex_unlock(&b->lock);
 }
-static void futex_wake(_Atomic uint32_t *word, int count) {
-    _umtx_op((void *)word, UMTX_OP_WAKE_PRIVATE, (unsigned long)count, NULL, NULL);
+static void word_wake(_Atomic uint32_t *word) {
+    ParkBucket *b = bucket_of(word);
+    pthread_mutex_lock(&b->lock);
+    pthread_cond_broadcast(&b->wake); /* the bucket is shared: every waiter checks its own word */
+    pthread_mutex_unlock(&b->lock);
 }
-/* Time left until an absolute CLOCK_REALTIME deadline; 0 once it has passed. */
-static int time_left(const struct timespec *end, struct timespec *left) {
+static int deadline_passed(const struct timespec *end) {
     struct timespec now;
     clock_gettime(CLOCK_REALTIME, &now);
-    int64_t ns = (int64_t)(end->tv_sec - now.tv_sec) * 1000000000 + (end->tv_nsec - now.tv_nsec);
-    if (ns <= 0) return 0;
-    left->tv_sec = (time_t)(ns / 1000000000); left->tv_nsec = (long)(ns % 1000000000);
-    return 1;
+    return now.tv_sec > end->tv_sec || (now.tv_sec == end->tv_sec && now.tv_nsec >= end->tv_nsec);
 }
 /* Takes the lock word (Drepper's three-state mutex); `end` NULL waits for ever. */
 static int lock_word(GuestMutex *m, const struct timespec *end) {
@@ -53,9 +76,8 @@ static int lock_word(GuestMutex *m, const struct timespec *end) {
     }
     if (c != 2) c = atomic_exchange(&m->state, 2);
     while (c != 0) {
-        struct timespec left;
-        if (end && !time_left(end, &left)) return ETIMEDOUT;
-        futex_wait(&m->state, 2, end ? &left : NULL);
+        if (end && deadline_passed(end)) return ETIMEDOUT;
+        word_wait(&m->state, 2, end);
         c = atomic_exchange(&m->state, 2);
     }
     return 0;
@@ -63,7 +85,7 @@ static int lock_word(GuestMutex *m, const struct timespec *end) {
 static void unlock_word(GuestMutex *m) {
     if (atomic_fetch_sub(&m->state, 1) != 1) {
         atomic_store(&m->state, 0);
-        futex_wake(&m->state, 1);
+        word_wake(&m->state);
     }
 }
 static int ps5_lock(GuestMutex *m, const struct timespec *end, int try_only) {
@@ -88,6 +110,41 @@ static int ps5_unlock(GuestMutex *m) {
     atomic_store_explicit(&m->owner, 0, memory_order_relaxed);
     unlock_word(m);
     return 0;
+}
+static int ps5_cond_wait(GuestCond *c, GuestMutex *m, const struct timespec *end) {
+    if (m->type != 3 && atomic_load_explicit(&m->owner, memory_order_relaxed) != self_id()) return EPERM;
+    ParkBucket *b = bucket_of(c);
+    /* Counted as a waiter before the mutex is released: a signal sent after that release (and
+     * before this thread sleeps) leaves its token, so it is not lost. */
+    pthread_mutex_lock(&b->lock);
+    ++c->waiters;
+    pthread_mutex_unlock(&b->lock);
+    const uint32_t recursion = m->recursion;
+    m->recursion = 0;
+    atomic_store_explicit(&m->owner, 0, memory_order_relaxed);
+    unlock_word(m);
+    int result = 0;
+    pthread_mutex_lock(&b->lock);
+    while (!c->tokens) {
+        int e = end ? pthread_cond_timedwait(&b->wake, &b->lock, end) : pthread_cond_wait(&b->wake, &b->lock);
+        if (e == ETIMEDOUT && !c->tokens) { result = ETIMEDOUT; break; }
+    }
+    if (!result) --c->tokens;
+    --c->waiters;
+    if (c->tokens > c->waiters) c->tokens = c->waiters;
+    pthread_mutex_unlock(&b->lock);
+    lock_word(m, NULL);
+    atomic_store_explicit(&m->owner, self_id(), memory_order_relaxed);
+    m->recursion = recursion;
+    return result;
+}
+static void ps5_cond_signal(GuestCond *c, int all) {
+    ParkBucket *b = bucket_of(c);
+    pthread_mutex_lock(&b->lock);
+    if (all) c->tokens = c->waiters;
+    else if (c->tokens < c->waiters) ++c->tokens;
+    pthread_cond_broadcast(&b->wake);
+    pthread_mutex_unlock(&b->lock);
 }
 #else
 typedef struct { pthread_mutex_t native; } GuestMutex;
@@ -235,27 +292,6 @@ static ABI int32_t mutex_timedlock(GuestMutex **mutex, uint32_t usec) {
  * like FreeBSD's default), sharing the host mutex behind GuestMutex. */
 #ifndef __PROSPERO__
 typedef struct { pthread_cond_t native; } GuestCond;
-#else
-/* Waits on a sequence word: a signal or broadcast changes it after the waiter read it, so no
- * wakeup between the mutex release and the wait is lost (spurious wakeups are allowed). The
- * mutex is released whole and taken again with its recursion count. */
-static int ps5_cond_wait(GuestCond *c, GuestMutex *m, const struct timespec *end) {
-    if (m->type != 3 && atomic_load_explicit(&m->owner, memory_order_relaxed) != self_id()) return EPERM;
-    const uint32_t seen = atomic_load(&c->sequence);
-    const uint32_t recursion = m->recursion;
-    m->recursion = 0;
-    atomic_store_explicit(&m->owner, 0, memory_order_relaxed);
-    unlock_word(m);
-    int result = 0;
-    struct timespec left;
-    if (end && !time_left(end, &left)) result = ETIMEDOUT;
-    else futex_wait(&c->sequence, seen, end ? &left : NULL);
-    if (!result && end && atomic_load(&c->sequence) == seen && !time_left(end, &left)) result = ETIMEDOUT;
-    lock_word(m, NULL);
-    atomic_store_explicit(&m->owner, self_id(), memory_order_relaxed);
-    m->recursion = recursion;
-    return result;
-}
 #endif
 static size_t conds, waits, wakeups;
 static ABI int32_t cond_init(GuestCond **out, void **attr, const char *name) {
@@ -264,7 +300,7 @@ static ABI int32_t cond_init(GuestCond **out, void **attr, const char *name) {
     GuestCond *c = malloc(sizeof(*c));
     if (!c) return orbis_error(ENOMEM);
 #ifdef __PROSPERO__
-    atomic_init(&c->sequence, 0);
+    c->waiters = c->tokens = 0;
     int e = 0;
 #else
     int e = pthread_cond_init(&c->native, NULL);
@@ -327,7 +363,7 @@ static ABI int32_t cond_signal(GuestCond **cond) {
     int32_t e = ensure_cond(cond);
     if (e) return e;
 #ifdef __PROSPERO__
-    ++wakeups; atomic_fetch_add(&(*cond)->sequence, 1); futex_wake(&(*cond)->sequence, 1); return 0;
+    ++wakeups; ps5_cond_signal(*cond, 0); return 0;
 #else
     ++wakeups; return orbis_error(pthread_cond_signal(&(*cond)->native));
 #endif
@@ -336,7 +372,7 @@ static ABI int32_t cond_broadcast(GuestCond **cond) {
     int32_t e = ensure_cond(cond);
     if (e) return e;
 #ifdef __PROSPERO__
-    ++wakeups; atomic_fetch_add(&(*cond)->sequence, 1); futex_wake(&(*cond)->sequence, 0x7fffffff); return 0;
+    ++wakeups; ps5_cond_signal(*cond, 1); return 0;
 #else
     ++wakeups; return orbis_error(pthread_cond_broadcast(&(*cond)->native));
 #endif
