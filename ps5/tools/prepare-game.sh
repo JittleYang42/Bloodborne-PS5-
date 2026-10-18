@@ -9,7 +9,8 @@
 # TITLE_DIR   the built title folder (dist/PPSA99173): its bbport/ folder is filled
 #
 # Writes bbport/boot-linked.bin, content.bin, patches-60.bin, patches-uncap.bin (the scene at
-# 1916x1078, FSR 3.1 to 3840x2160, Quit to Desktop off: a title cannot quit to the home screen
+# 1916x1078, FSR 3.1 to 3840x2160, chromatic aberration and the game's own (blurring) AA off,
+# Quit to Desktop off: a title cannot quit to the home screen
 # that way), bbport.ini and input.ini. The game dump itself is copied to the console separately
 # (README-PS5.txt).
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -27,6 +28,8 @@ ln -f "$port/out/eboot.elf" "$work/eboot.elf" 2>/dev/null || cp "$port/out/eboot
 sed -e 's/^upscaler=.*/upscaler=fsr3/' -e 's/^preset=.*/preset=3/' -e "s/^output_res=.*/output_res=$output/" \
     -e 's/^model_lod=.*/model_lod=0/' -e 's/^quit_to_desktop=.*/quit_to_desktop=0/' \
     -e 's/^live_resolution=.*/live_resolution=0/' -e 's/^frame_gen=.*/frame_gen=off/' \
+    -e "s/^effect_chromatic_aberration=.*/effect_chromatic_aberration=${BB_PS5_CHROMATIC:-0}/" \
+    -e "s/^effect_game_aa=.*/effect_game_aa=${BB_PS5_GAME_AA:-0}/" -e 's/^sharpness=.*/sharpness=0.60/' \
     "$port/bbport.ini" > "$title/bbport/bbport.ini"
 for fps in 60 uncap; do
     (cd "$port" && BB_QUIT_TO_DESKTOP=0 python3 scripts/patches.py --out "$work" --fps "$fps" \
