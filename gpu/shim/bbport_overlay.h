@@ -38,6 +38,9 @@ void NotePresent();
 /// The menu is open or a text entry is shown: the game's input is held neutral.
 bool CapturesInput();
 
+/// bbport PS5: the window thread polls L3+R3 itself and opens/closes the menu with this.
+void TogglePadMenu();
+
 /// Window thread: the game's text dialog (sceImeDialog). Shown as a box on screen until
 /// `active` is false; typing goes to the window (sdl_window), the box only displays it.
 void SetTextEntry(bool active, const std::string& prompt, const std::string& text);

@@ -311,6 +311,19 @@ bool WindowSDL::PollEvents() {
     // MOU-004: re-evaluated every PollEvents (not only on the events that could change it),
     // because the menu can also close from the render thread (bbport_overlay.cpp's "Close"
     // button sets menu_open there, not through an SDL event here).
+#ifdef __PROSPERO__
+    // bbport PS5: L3+R3 read straight from the controller every pass (the menu did not open
+    // from the queued button events on the console).
+    {
+        static bool combo_before = false;
+        const bool combo = SDL_GetGamepadButton(nullptr, SDL_GAMEPAD_BUTTON_LEFT_STICK) &&
+                           SDL_GetGamepadButton(nullptr, SDL_GAMEPAD_BUTTON_RIGHT_STICK);
+        if (combo && !combo_before) {
+            BbOverlay::TogglePadMenu();
+        }
+        combo_before = combo;
+    }
+#endif
     UpdateMouseCapture();
     BbPrompts::Apply();
     UpdateMouseCamera();

@@ -105,8 +105,11 @@ static vk::SurfaceKHR Ps5CreateDisplaySurface(vk::Instance instance) {
             const auto& q = m.parameters;
             const u64 area = u64(q.visibleRegion.width) * q.visibleRegion.height;
             const u64 asked = q.visibleRegion.width == want_w && q.visibleRegion.height == want_h ? 1 : 0;
-            const u64 refresh_fit = q.refreshRate + 500 >= want_refresh ? 1 : 0;
-            return (asked << 63) | (refresh_fit << 62) | (area << 20) | std::min<u32>(q.refreshRate, 0xfffff);
+            // The refresh nearest the frame rate's (59.94/60 for BB_FPS=60, 119.88/120 for
+            // uncap): 60 FPS on a 144 Hz mode judders.
+            const u32 off = q.refreshRate > want_refresh ? q.refreshRate - want_refresh : want_refresh - q.refreshRate;
+            const u64 refresh_fit = 0xfffff - std::min<u32>(off, 0xfffff);
+            return (asked << 63) | (area << 20) | refresh_fit;
         };
         if (!best || score(mode) > score(*best)) best = &mode;
     }

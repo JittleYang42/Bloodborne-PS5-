@@ -670,10 +670,18 @@ bool HandleEvent(const SDL_Event& event) {
         } else if (button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) {
             r3_down = down;
         }
+#ifndef __PROSPERO__
         if (down && l3_down && r3_down) {
             SetOpen(!is_open);
             return true;
         }
+#else
+        // bbport PS5: L3+R3 is polled by the window thread (TogglePadMenu); the stick clicks
+        // never reach the game's menu navigation.
+        if (button == SDL_GAMEPAD_BUTTON_LEFT_STICK || button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) {
+            return is_open;
+        }
+#endif
         if (!is_open) {
             return false;
         }
@@ -726,6 +734,16 @@ bool HandleEvent(const SDL_Event& event) {
 
 bool Visible() {
     return initialized && (menu_open || text_entry_active || BbSettings::Get().show_fps);
+}
+
+void TogglePadMenu() {
+    std::scoped_lock lock{imgui_mutex};
+    if (!initialized) {
+        std::printf("Overlay: L3+R3 before the menu is ready\n");
+        return;
+    }
+    SetOpen(!menu_open);
+    std::printf("Overlay: menu %s (L3+R3)\n", menu_open ? "opened" : "closed");
 }
 
 bool CapturesInput() {

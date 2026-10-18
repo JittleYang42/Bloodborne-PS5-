@@ -158,6 +158,9 @@ static void defaults(void) {
     setenv("BB_AUTO_RENDER_RES", "1", 0);
     /* Uncapped frame rate: the display at 120 Hz where the TV takes it (else 60). */
     setenv("BB_VBLANK_HZ", getenv("BB_FPS") && !strcmp(getenv("BB_FPS"), "uncap") ? "120" : "60", 0);
+    /* The console's GPU through RADV: depth (HiZ/HTILE) and colour (DCC) compression showed
+     * 8x8 blocks along every edge in test build 7. Off unless the .env file sets RADV_DEBUG. */
+    setenv("RADV_DEBUG", "nohiz,nodcc", 0);
     setenv("BB_FULLSCREEN", "1", 0);
     setenv("BB_QUIT_TO_DESKTOP", "0", 0);
     setenv("BB_ONLINE", "0", 0);
