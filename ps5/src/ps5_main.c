@@ -166,6 +166,39 @@ static void defaults(void) {
     setenv("BB_ONLINE", "0", 0);
     setenv("HOME", PORT "/user/home", 0);
 }
+/* ---- the console's own output resolution ----
+ * VideoOut scales whatever buffer the title flips to the resolution set in the PS5's Screen and
+ * Video settings; drawing at that resolution is the sharpest and cheapest. Read once, before the
+ * Vulkan swapchain opens VideoOut for good; BB_DISPLAY_RES in the .env file overrides it. */
+#include <ps5platform/videoout.h>
+typedef struct {
+    int32_t full_width, full_height, pane_width, pane_height;
+    uint64_t refresh_rate;
+    float screen_size_inches;
+    uint16_t flags, reserved0;
+    uint32_t reserved1[3];
+} VideoOutResolutionStatus;
+int sceVideoOutGetResolutionStatus(int32_t handle, VideoOutResolutionStatus *status);
+static void detect_display(void) {
+    if (getenv("BB_DISPLAY_RES") && *getenv("BB_DISPLAY_RES")) {
+        printf("PS5: display resolution %s (bbport-ps5.env)\n", getenv("BB_DISPLAY_RES"));
+        return;
+    }
+    const int handle = sceVideoOutOpen(PS5_VIDEO_OUT_USER_SYSTEM, 0, 0, NULL);
+    if (handle < 0) { printf("PS5: VideoOut open for the resolution: 0x%08x; 4K\n", (unsigned)handle); return; }
+    VideoOutResolutionStatus status;
+    memset(&status, 0, sizeof(status));
+    const int result = sceVideoOutGetResolutionStatus(handle, &status);
+    sceVideoOutClose(handle);
+    printf("PS5: console output %dx%d (pane %dx%d), result 0x%08x\n", status.full_width, status.full_height,
+           status.pane_width, status.pane_height, (unsigned)result);
+    if (result != 0 || status.full_width <= 0 || status.full_height <= 0) return;
+    /* The buffer sizes VideoOut takes: 4K, 1440p, 1080p; the largest not above the output. */
+    const char *res = status.full_height >= 2160 ? "3840x2160" : status.full_height >= 1440 ? "2560x1440" : "1920x1080";
+    setenv("BB_DISPLAY_RES", res, 1);
+    printf("PS5: display resolution %s (the console's output)\n", res);
+}
+
 static int exists(const char *path) { struct stat st; return stat(path, &st) == 0; }
 
 int main(void) {
@@ -175,6 +208,7 @@ int main(void) {
     printf("PS5: splash dismissed: %d\n", sceSystemServiceHideSplashScreen());
     load_environment(PORT "/bbport-ps5.env");
     defaults();
+    detect_display();
     mkdir(PORT "/user", 0777);
     mkdir(PORT "/user/home", 0777);
     const char *game = getenv("BB_GAME_DIR") ? getenv("BB_GAME_DIR") : ROOT "/CUSA03173";

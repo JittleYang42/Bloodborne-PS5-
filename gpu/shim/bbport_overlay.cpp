@@ -175,7 +175,72 @@ std::string FpsText() {
     return text;
 }
 
+#ifdef __PROSPERO__
+// bbport PS5: only what changes the game as it runs. The effects, field of view, model detail,
+// presets and output resolution are game patches made on the PC (ps5/tools/prepare-game.sh) and
+// the resolution follows the console's output, so the console's menu does not offer them.
+void MenuPs5() {
+    auto& s = BbSettings::Get();
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 40.0f * base_scale,
+                                   viewport->WorkPos.y + 40.0f * base_scale),
+                            ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(560.0f * base_scale, 0.0f), ImGuiCond_Appearing);
+    bool keep_open = true;
+    if (!ImGui::Begin("Bloodborne - Settings (L3+R3)", &keep_open, ImGuiWindowFlags_NoCollapse)) {
+        ImGui::End();
+        return;
+    }
+    ImGui::Text("%s", FpsText().c_str());
+    const char* output = std::getenv("BB_OUTPUT_RES");
+    ImGui::Text("Scene %d x %d, shown at %s", s.active_render_width.load(), s.active_render_height.load(),
+                output ? output : "?");
+
+    ImGui::SeparatorText("Image");
+    static const char* names[] = {"Off", "FSR 3.1", "TAA (native anti-aliasing)"};
+    static constexpr int values[] = {BbSettings::UpscalerOff, BbSettings::UpscalerFsr3, BbSettings::UpscalerTaa};
+    int current = 1;
+    for (int i = 0; i < 3; ++i) {
+        if (values[i] == s.upscaler) current = i;
+    }
+    if (ImGui::BeginCombo("Upscaler", names[current])) {
+        for (int i = 0; i < 3; ++i) {
+            if (ImGui::Selectable(names[i], i == current)) Store(s.upscaler, values[i], true);
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::BeginDisabled(s.upscaler == BbSettings::UpscalerOff);
+    Checkbox("Sharpening", s.sharpen);
+    ImGui::BeginDisabled(!s.sharpen);
+    Slider("Sharpness", s.sharpness, 0.0f, 2.0f);
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Other");
+    Checkbox("Show FPS counter", s.show_fps);
+    static const char* prompt_modes[] = {"Follow the device in use", "PlayStation", "Keyboard and mouse", "Xbox",
+                                         "Nintendo Switch"};
+    int prompts = s.button_prompts;
+    if (ImGui::BeginCombo("Button prompts", prompt_modes[prompts])) {
+        for (int i = 0; i < BbSettings::PromptsCount; ++i) {
+            if (ImGui::Selectable(prompt_modes[i], i == prompts)) Store(s.button_prompts, i, true);
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::Spacing();
+    if (ImGui::Button("Close")) keep_open = false;
+    ImGui::SameLine();
+    ImGui::TextDisabled("Saved to bbport.ini");
+    ImGui::End();
+    if (!keep_open) SetOpen(false);
+}
+#endif
+
 void Menu() {
+#ifdef __PROSPERO__
+    MenuPs5();
+    return;
+#endif
     auto& s = BbSettings::Get();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 40.0f * base_scale,
