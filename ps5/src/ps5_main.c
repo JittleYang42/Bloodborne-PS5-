@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <signal.h>
+#include <stdarg.h>
 
 int bb_probe_main(int argc, char **argv);
 int sceSystemServiceHideSplashScreen(void);
@@ -38,6 +39,7 @@ const char *bb_ps5_app_root(void) { return ROOT; }
  * first test build's pipe left last_run.log empty. A one-line marker file, written and synced
  * with plain write(), shows whether the title could write to its folder at all. */
 static int log_fd = -1;
+int bb_ps5_log_fd(void) { return log_fd >= 0 ? log_fd : 2; }
 void bb_ps5_log_line(const char *text) {
     if (log_fd >= 0) { ssize_t w = write(log_fd, text, strlen(text)); (void)w; }
     sceKernelDebugOutText(0, text);
@@ -60,6 +62,17 @@ static void log_start(void) {
     setvbuf(stderr, NULL, _IONBF, 0);
     printf("PS5: log open\n");
     fflush(stdout);
+    /* Crash reports (src/probe.c) use write(2): check that descriptor 2 is the log. */
+    {
+        struct stat before, after;
+        fstat(log_fd, &before);
+        ssize_t w = write(2, "PS5: descriptor 2 writes to the log\n", 36); (void)w;
+        fstat(log_fd, &after);
+        if (after.st_size == before.st_size) {
+            static const char text[] = "PS5: descriptor 2 does not reach the log: crash reports may be lost\n";
+            w = write(log_fd, text, sizeof(text) - 1);
+        }
+    }
     /* If the console's stdio does not write through descriptor 1, reopen the streams by name. */
     struct stat st;
     if (fstat(log_fd, &st) == 0 && st.st_size == 0) {
@@ -73,22 +86,46 @@ static void log_start(void) {
 }
 
 /* ---- heartbeat: what the game is doing when it seems stuck ----
- * A line every 10 s; at 30 s, 60 s, 120 s and every 2 minutes after, the runtime's counters and
- * a stack dump of every guest thread (SIGUSR2: guest offsets for the code the game runs). */
+ * Written with write() on the log's own descriptor, so a thread stuck inside stdio cannot stop
+ * it: every 2 s for the first minute (GPU counters, free direct memory), every 10 s after. At
+ * 30 s, 60 s and every 2 minutes, the runtime's counters and every guest thread's stack. */
+#include <ps5platform/kernel.h>
 void runtime_report(void);
 void runtime_thread_signal_all(int sig);
+int bb_ps5_gpu_stats(char *out, unsigned long size);
+static void beat(const char *format, ...) __attribute__((format(printf, 1, 2)));
+static void beat(const char *format, ...) {
+    char line[768];
+    va_list args;
+    va_start(args, format);
+    int n = vsnprintf(line, sizeof(line) - 1, format, args);
+    va_end(args);
+    if (n < 0) return;
+    if (n > (int)sizeof(line) - 2) n = (int)sizeof(line) - 2;
+    line[n++] = '\n';
+    if (log_fd >= 0) { ssize_t w = write(log_fd, line, (size_t)n); (void)w; }
+}
 static void *heartbeat_main(void *unused) {
     (void)unused;
-    for (unsigned seconds = 10;; seconds += 10) {
-        sleep(10);
-        printf("PS5: heartbeat %u s\n", seconds);
+    for (unsigned tick = 1;; ++tick) {
+        const unsigned seconds = tick <= 30 ? tick * 2 : 60 + (tick - 30) * 10;
+        sleep(tick <= 30 ? 2 : 10);
+        char gpu[512];
+        bb_ps5_gpu_stats(gpu, sizeof(gpu));
+        int64_t start = 0; size_t free_direct = 0, free_flexible = 0;
+        sceKernelAvailableDirectMemorySize(0, sceKernelGetDirectMemorySize(), 0x10000, &start, &free_direct);
+        sceKernelAvailableFlexibleMemorySize(&free_flexible);
+        beat("PS5: heartbeat %u s; free direct %zu MiB, flexible %zu MiB; %s", seconds,
+             free_direct >> 20, free_flexible >> 20, gpu);
         if (seconds == 30 || seconds == 60 || seconds % 120 == 0) {
-            printf("PS5: ---- runtime state at %u s ----\n", seconds);
+            beat("PS5: ---- runtime state at %u s ----", seconds);
+            fflush(stdout);
             runtime_report();
-            printf("PS5: ---- guest thread stacks at %u s ----\n", seconds);
+            fflush(stdout);
+            beat("PS5: ---- guest thread stacks at %u s ----", seconds);
             runtime_thread_signal_all(SIGUSR2);
             sleep(2);
-            printf("PS5: ---- end of state ----\n");
+            beat("PS5: ---- end of state ----");
         }
     }
     return NULL;

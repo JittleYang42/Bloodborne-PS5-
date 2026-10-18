@@ -29,6 +29,9 @@
 #define UC_RBP(uc) ((uc)->uc_mcontext.mc_rbp)
 #define UC_RDI(uc) ((uc)->uc_mcontext.mc_rdi)
 #undef round_page /* FreeBSD's machine/param.h macro */
+/* Crash reports go to the log's own descriptor (ps5/src/ps5_main.c). */
+int bb_ps5_log_fd(void);
+#define BB_CRASH_FD bb_ps5_log_fd()
 #else
 #include <sys/mman.h>
 #include <malloc.h>
@@ -40,6 +43,7 @@
 #include <execinfo.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#define BB_CRASH_FD 2
 #define UC_RIP(uc) ((uc)->uc_mcontext.gregs[REG_RIP])
 #define UC_RBP(uc) ((uc)->uc_mcontext.gregs[REG_RBP])
 #define UC_RDI(uc) ((uc)->uc_mcontext.gregs[REG_RDI])
@@ -314,7 +318,7 @@ static void fault(int sig, siginfo_t *info, void *context) {
                  (unsigned long)(rip - (uintptr_t)where.dli_fbase), where.dli_sname ? where.dli_sname : "?", info->si_addr);
     else
         snprintf(line, sizeof(line), "Fault (signal %d) at RIP %p, address %p\n", sig, (void *)rip, info->si_addr);
-    { ssize_t written_=write(2, line, strlen(line)); (void)written_; }
+    { ssize_t written_=write(BB_CRASH_FD, line, strlen(line)); (void)written_; }
     if (gpu_enabled) bbgpu_dump_guest_writes(context);
     /* Host call chain (frames with unwind info; guest frames end it). */
     void *frames[32];
@@ -325,7 +329,7 @@ static void fault(int sig, siginfo_t *info, void *context) {
                      (unsigned long)((uintptr_t)frames[i] - (uintptr_t)where.dli_fbase), where.dli_sname ? where.dli_sname : "?");
         else
             snprintf(line, sizeof(line), "  #%d %p\n", i, frames[i]);
-        ssize_t written_=write(2, line, strlen(line)); (void)written_;
+        ssize_t written_=write(BB_CRASH_FD, line, strlen(line)); (void)written_;
     }
     _exit(128 + sig);
 }
@@ -345,10 +349,10 @@ static void dump_frames(ucontext_t *uc) {
     /* First argument register: the lock address when a thread waits on a futex. */
     char arg[]="  tid=0000000000000000 rdi=0000000000000000\n";
     write_hex(arg+6,tid); write_hex(arg+27,(uint64_t)UC_RDI(uc));
-    { ssize_t written_=write(2,arg,sizeof(arg)-1); (void)written_; }
+    { ssize_t written_=write(BB_CRASH_FD,arg,sizeof(arg)-1); (void)written_; }
     for (int depth=0; depth<24; ++depth) {
         write_hex(line+6,tid); write_hex(line+27,rip); write_hex(line+59,rip-(uintptr_t)image); write_hex(line+90,rip-exe_base);
-        { ssize_t written_=write(2,line,sizeof(line)-1); (void)written_; }
+        { ssize_t written_=write(BB_CRASH_FD,line,sizeof(line)-1); (void)written_; }
         uintptr_t frame[2];
 #ifdef __PROSPERO__
         /* No process_vm_readv: only frames in mapped memory (queried first) are read. */
@@ -368,13 +372,13 @@ const char *runtime_thread_dump_name(void);
 static void thread_dump(int sig, siginfo_t *info, void *context) {
     (void)sig; (void)info;
     const char *name=runtime_thread_dump_name();
-    { ssize_t w=write(2,"thread ",7); w=write(2,name,strlen(name)); w=write(2,":\n",2); (void)w; }
+    { ssize_t w=write(BB_CRASH_FD,"thread ",7); w=write(BB_CRASH_FD,name,strlen(name)); w=write(BB_CRASH_FD,":\n",2); (void)w; }
     dump_frames(context);
 }
 static void watchdog(int sig, siginfo_t *info, void *context) {
     (void)info;
     const char head[]="STOP: watchdog timeout; thread stacks:\n";
-    { ssize_t written_=write(2,head,sizeof(head)-1); (void)written_; }
+    { ssize_t written_=write(BB_CRASH_FD,head,sizeof(head)-1); (void)written_; }
     dump_frames(context);
 #ifdef __PROSPERO__
     /* No /proc on the console: the thread that took the alarm only. */

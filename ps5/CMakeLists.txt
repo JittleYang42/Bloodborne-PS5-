@@ -136,7 +136,7 @@ add_library(bbgpu STATIC ${VIDEO_CORE} ${RECOMPILER} ${COMMON} ${SHIM_SOURCES} $
     ${GPU}/third_party/imgui/imgui.cpp ${GPU}/third_party/imgui/imgui_draw.cpp
     ${GPU}/third_party/imgui/imgui_tables.cpp ${GPU}/third_party/imgui/imgui_widgets.cpp
     ${GPU}/third_party/imgui/backends/imgui_impl_vulkan.cpp
-    src/ps5_stubs.cpp)
+    src/ps5_stubs.cpp src/ps5_stats.cpp)
 add_dependencies(bbgpu host_shaders)
 target_include_directories(bbgpu PRIVATE ${GPU}/shim ${GPU}/shadps4 ${SHADER_INCLUDE}
     ${GPU}/third_party/gcn/include ${GPU}/third_party/half/include
