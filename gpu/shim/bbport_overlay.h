@@ -41,5 +41,11 @@ bool CapturesInput();
 /// Window thread: the game's text dialog (sceImeDialog). Shown as a box on screen until
 /// `active` is false; typing goes to the window (sdl_window), the box only displays it.
 void SetTextEntry(bool active, const std::string& prompt, const std::string& text);
+/// bbport PS5: the controller's on-screen keyboard (no keyboard on the console): its rows and
+/// the highlighted key, drawn in the text box; window.cpp moves it with the d-pad.
+inline constexpr const char* kKeyboardRows[] = {"ABCDEFGHIJKLM", "NOPQRSTUVWXYZ", "abcdefghijklm",
+                                                "nopqrstuvwxyz", "0123456789-_."};
+inline constexpr int kKeyboardRowCount = 5;
+void SetKeyboardCursor(int row, int column);
 
 } // namespace BbOverlay

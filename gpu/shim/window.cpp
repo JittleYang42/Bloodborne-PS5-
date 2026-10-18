@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <array>
 #include <SDL3/SDL.h>
 #include "common/assert.h"
@@ -232,6 +233,50 @@ bool WindowSDL::PollEvents() {
             UpdateTextTitle();
             continue;
         }
+#ifdef __PROSPERO__
+        // bbport PS5: the on-screen keyboard (bbport_overlay.h): d-pad, Cross types, Square
+        // erases, Triangle adds a space, Options accepts, Circle cancels.
+        if (text_active && event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+            static int row = 0, column = 0;
+            const auto row_length = [](int r) { return int(std::strlen(BbOverlay::kKeyboardRows[r])); };
+            std::scoped_lock lock{text_mutex};
+            switch (event.gbutton.button) {
+            case SDL_GAMEPAD_BUTTON_DPAD_UP:
+                row = (row + BbOverlay::kKeyboardRowCount - 1) % BbOverlay::kKeyboardRowCount;
+                break;
+            case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
+                row = (row + 1) % BbOverlay::kKeyboardRowCount;
+                break;
+            case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
+                column = (column + row_length(row) - 1) % row_length(row);
+                break;
+            case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
+                column = (column + 1) % row_length(row);
+                break;
+            case SDL_GAMEPAD_BUTTON_SOUTH:
+                if (text.size() < 32) text += BbOverlay::kKeyboardRows[row][std::min(column, row_length(row) - 1)];
+                break;
+            case SDL_GAMEPAD_BUTTON_NORTH:
+                if (text.size() < 32) text += ' ';
+                break;
+            case SDL_GAMEPAD_BUTTON_WEST:
+                if (!text.empty()) text.pop_back();
+                break;
+            case SDL_GAMEPAD_BUTTON_START:
+            case SDL_GAMEPAD_BUTTON_EAST:
+                text_state = event.gbutton.button == SDL_GAMEPAD_BUTTON_START ? 1 : 2;
+                text_active = false;
+                SDL_StopTextInput(window);
+                break;
+            default:
+                break;
+            }
+            column = std::min(column, row_length(row) - 1);
+            BbOverlay::SetKeyboardCursor(row, column);
+            UpdateTextTitle();
+            continue;
+        }
+#endif
         // The controller finishes the text dialog too: Cross (A) accepts, Circle (B) cancels.
         if (text_active && event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
             (event.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH ||

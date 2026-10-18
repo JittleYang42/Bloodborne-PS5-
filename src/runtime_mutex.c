@@ -8,7 +8,90 @@
 #include <errno.h>
 #include <time.h>
 typedef struct { int type; } GuestAttr;
+#ifdef __PROSPERO__
+/* bbport PS5: guest mutexes and condition variables without libkernel pthread objects. The game
+ * creates tens of thousands (71,684 mutexes and 21,547 condition variables two minutes in);
+ * each pthread one took libkernel's internal memory until "[ScePthread/System] Internal Memory
+ * is running out" and a failed lock ended the game. These are words in our own memory, waited
+ * on with the kernel's _umtx_op (what libkernel's own locks use), which allocates nothing. */
+#include <stdatomic.h>
+#include <pthread_np.h>
+#include <sys/umtx.h>
+int _umtx_op(void *obj, int op, unsigned long val, void *uaddr, void *uaddr2);
+typedef struct {
+    _Atomic uint32_t state;   /* 0 free, 1 locked, 2 locked with waiters */
+    _Atomic int owner;        /* thread id, 0 when free */
+    uint32_t recursion;       /* extra holds of a recursive mutex */
+    int type;                 /* 1 errorcheck (default), 2 recursive, 3 normal, 4 adaptive */
+} GuestMutex;
+typedef struct { _Atomic uint32_t sequence; } GuestCond;
+static int self_id(void) { return pthread_getthreadid_np(); }
+static void futex_wait(_Atomic uint32_t *word, uint32_t value, const struct timespec *relative) {
+    _umtx_op((void *)word, UMTX_OP_WAIT_UINT_PRIVATE, value,
+             relative ? (void *)(uintptr_t)sizeof(*relative) : NULL, (void *)relative);
+}
+static void futex_wake(_Atomic uint32_t *word, int count) {
+    _umtx_op((void *)word, UMTX_OP_WAKE_PRIVATE, (unsigned long)count, NULL, NULL);
+}
+/* Time left until an absolute CLOCK_REALTIME deadline; 0 once it has passed. */
+static int time_left(const struct timespec *end, struct timespec *left) {
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    int64_t ns = (int64_t)(end->tv_sec - now.tv_sec) * 1000000000 + (end->tv_nsec - now.tv_nsec);
+    if (ns <= 0) return 0;
+    left->tv_sec = (time_t)(ns / 1000000000); left->tv_nsec = (long)(ns % 1000000000);
+    return 1;
+}
+/* Takes the lock word (Drepper's three-state mutex); `end` NULL waits for ever. */
+static int lock_word(GuestMutex *m, const struct timespec *end) {
+    uint32_t c = 0;
+    if (atomic_compare_exchange_strong(&m->state, &c, 1)) return 0;
+    for (int spin = 0; spin < 100; ++spin) {
+        __builtin_ia32_pause();
+        c = 0;
+        if (atomic_compare_exchange_weak(&m->state, &c, 1)) return 0;
+    }
+    if (c != 2) c = atomic_exchange(&m->state, 2);
+    while (c != 0) {
+        struct timespec left;
+        if (end && !time_left(end, &left)) return ETIMEDOUT;
+        futex_wait(&m->state, 2, end ? &left : NULL);
+        c = atomic_exchange(&m->state, 2);
+    }
+    return 0;
+}
+static void unlock_word(GuestMutex *m) {
+    if (atomic_fetch_sub(&m->state, 1) != 1) {
+        atomic_store(&m->state, 0);
+        futex_wake(&m->state, 1);
+    }
+}
+static int ps5_lock(GuestMutex *m, const struct timespec *end, int try_only) {
+    const int me = self_id();
+    if (atomic_load_explicit(&m->owner, memory_order_relaxed) == me) {
+        if (m->type == 2) { ++m->recursion; return 0; }
+        if (m->type != 3) return try_only ? EBUSY : EDEADLK;
+    }
+    if (try_only) {
+        uint32_t c = 0;
+        if (!atomic_compare_exchange_strong(&m->state, &c, 1)) return EBUSY;
+    } else {
+        int e = lock_word(m, end);
+        if (e) return e;
+    }
+    atomic_store_explicit(&m->owner, me, memory_order_relaxed);
+    return 0;
+}
+static int ps5_unlock(GuestMutex *m) {
+    if (m->type != 3 && atomic_load_explicit(&m->owner, memory_order_relaxed) != self_id()) return EPERM;
+    if (m->recursion) { --m->recursion; return 0; }
+    atomic_store_explicit(&m->owner, 0, memory_order_relaxed);
+    unlock_word(m);
+    return 0;
+}
+#else
 typedef struct { pthread_mutex_t native; } GuestMutex;
+#endif
 static size_t created, locks, unlocks;
 static int32_t orbis_error(int e) {
     if (!e) return 0;
@@ -50,6 +133,11 @@ static ABI int32_t mutex_init(GuestMutex **out, GuestAttr **attr, const char *na
     if (type < 1 || type > 4) return orbis_error(EINVAL);
     GuestMutex *mutex = malloc(sizeof(*mutex));
     if (!mutex) return orbis_error(ENOMEM);
+#ifdef __PROSPERO__
+    memset(mutex, 0, sizeof(*mutex));
+    mutex->type = type;
+    *out = mutex; ++created; return 0;
+#else
     pthread_mutexattr_t native_attr;
     int e = pthread_mutexattr_init(&native_attr);
     if (e) { free(mutex); return orbis_error(e); }
@@ -59,6 +147,7 @@ static ABI int32_t mutex_init(GuestMutex **out, GuestAttr **attr, const char *na
     pthread_mutexattr_destroy(&native_attr);
     if (e) { free(mutex); return orbis_error(e); }
     *out = mutex; ++created; return 0;
+#endif
 }
 static pthread_mutex_t static_init = PTHREAD_MUTEX_INITIALIZER;
 /* Statically initialized handles (0/1) are created once, even under contention. */
@@ -80,28 +169,44 @@ static int32_t ensure_mutex(GuestMutex **mutex) {
 static ABI int32_t mutex_lock(GuestMutex **mutex) {
     int32_t e = ensure_mutex(mutex);
     if (e) return e;
+#ifdef __PROSPERO__
+    e = orbis_error(ps5_lock(*mutex, NULL, 0));
+#else
     e = orbis_error(pthread_mutex_lock(&(*mutex)->native));
+#endif
     if (!e) ++locks;
     return e;
 }
 static ABI int32_t mutex_trylock(GuestMutex **mutex) {
     int32_t e = ensure_mutex(mutex);
     if (e) return e;
+#ifdef __PROSPERO__
+    e = orbis_error(ps5_lock(*mutex, NULL, 1));
+#else
     e = orbis_error(pthread_mutex_trylock(&(*mutex)->native));
+#endif
     if (!e) ++locks;
     return e;
 }
 static ABI int32_t mutex_unlock(GuestMutex **mutex) {
     if (!mutex || (uintptr_t)*mutex == 2) return orbis_error(EINVAL);
     if ((uintptr_t)*mutex < 2) return orbis_error(EPERM);
+#ifdef __PROSPERO__
+    int32_t e = orbis_error(ps5_unlock(*mutex));
+#else
     int32_t e = orbis_error(pthread_mutex_unlock(&(*mutex)->native));
+#endif
     if (!e) ++unlocks;
     return e;
 }
 static ABI int32_t mutex_destroy(GuestMutex **mutex) {
     if (!mutex || (uintptr_t)*mutex == 2) return orbis_error(EINVAL);
     if ((uintptr_t)*mutex < 2) return 0;
+#ifdef __PROSPERO__
+    int e = atomic_load(&(*mutex)->state) ? EBUSY : 0;
+#else
     int e = pthread_mutex_destroy(&(*mutex)->native);
+#endif
     if (!e) { free(*mutex); *mutex = (GuestMutex *)(uintptr_t)2; }
     return orbis_error(e);
 }
@@ -118,20 +223,52 @@ static ABI int32_t mutex_timedlock(GuestMutex **mutex, uint32_t usec) {
     if (e) return e;
     struct timespec end;
     if (deadline_after(&end, usec)) return orbis_error(EINVAL);
+#ifdef __PROSPERO__
+    e = timed_error(ps5_lock(*mutex, &end, 0));
+#else
     e = timed_error(pthread_mutex_timedlock(&(*mutex)->native, &end));
+#endif
     if (!e) ++locks;
     return e;
 }
 /* Condition variables: opaque handles over host pthread_cond (CLOCK_REALTIME,
  * like FreeBSD's default), sharing the host mutex behind GuestMutex. */
+#ifndef __PROSPERO__
 typedef struct { pthread_cond_t native; } GuestCond;
+#else
+/* Waits on a sequence word: a signal or broadcast changes it after the waiter read it, so no
+ * wakeup between the mutex release and the wait is lost (spurious wakeups are allowed). The
+ * mutex is released whole and taken again with its recursion count. */
+static int ps5_cond_wait(GuestCond *c, GuestMutex *m, const struct timespec *end) {
+    if (m->type != 3 && atomic_load_explicit(&m->owner, memory_order_relaxed) != self_id()) return EPERM;
+    const uint32_t seen = atomic_load(&c->sequence);
+    const uint32_t recursion = m->recursion;
+    m->recursion = 0;
+    atomic_store_explicit(&m->owner, 0, memory_order_relaxed);
+    unlock_word(m);
+    int result = 0;
+    struct timespec left;
+    if (end && !time_left(end, &left)) result = ETIMEDOUT;
+    else futex_wait(&c->sequence, seen, end ? &left : NULL);
+    if (!result && end && atomic_load(&c->sequence) == seen && !time_left(end, &left)) result = ETIMEDOUT;
+    lock_word(m, NULL);
+    atomic_store_explicit(&m->owner, self_id(), memory_order_relaxed);
+    m->recursion = recursion;
+    return result;
+}
+#endif
 static size_t conds, waits, wakeups;
 static ABI int32_t cond_init(GuestCond **out, void **attr, const char *name) {
     (void)attr; (void)name;
     if (!out) return orbis_error(EINVAL);
     GuestCond *c = malloc(sizeof(*c));
     if (!c) return orbis_error(ENOMEM);
+#ifdef __PROSPERO__
+    atomic_init(&c->sequence, 0);
+    int e = 0;
+#else
     int e = pthread_cond_init(&c->native, NULL);
+#endif
     if (e) { free(c); return orbis_error(e); }
     *out = c; ++conds; return 0;
 }
@@ -151,7 +288,11 @@ static int32_t ensure_cond(GuestCond **cond) {
 static ABI int32_t cond_destroy(GuestCond **cond) {
     if (!cond) return orbis_error(EINVAL);
     if ((uintptr_t)*cond < 2) return 0;
+#ifdef __PROSPERO__
+    int e = 0;
+#else
     int e = pthread_cond_destroy(&(*cond)->native);
+#endif
     if (!e) { free(*cond); *cond = NULL; }
     return orbis_error(e);
 }
@@ -160,14 +301,22 @@ static ABI int32_t cond_wait(GuestCond **cond, GuestMutex **mutex) {
     if (e) return e;
     if (!mutex || (uintptr_t)*mutex < 3) return orbis_error(EINVAL);
     ++waits;
+#ifdef __PROSPERO__
+    return orbis_error(ps5_cond_wait(*cond, *mutex, NULL));
+#else
     return orbis_error(pthread_cond_wait(&(*cond)->native, &(*mutex)->native));
+#endif
 }
 static int32_t cond_wait_until(GuestCond **cond, GuestMutex **mutex, const struct timespec *end) {
     int32_t e = ensure_cond(cond);
     if (e) return e;
     if (!mutex || (uintptr_t)*mutex < 3 || !end) return orbis_error(EINVAL);
     ++waits;
+#ifdef __PROSPERO__
+    return timed_error(ps5_cond_wait(*cond, *mutex, end));
+#else
     return timed_error(pthread_cond_timedwait(&(*cond)->native, &(*mutex)->native, end));
+#endif
 }
 static ABI int32_t cond_timedwait(GuestCond **cond, GuestMutex **mutex, uint32_t usec) {
     struct timespec end;
@@ -177,12 +326,20 @@ static ABI int32_t cond_timedwait(GuestCond **cond, GuestMutex **mutex, uint32_t
 static ABI int32_t cond_signal(GuestCond **cond) {
     int32_t e = ensure_cond(cond);
     if (e) return e;
+#ifdef __PROSPERO__
+    ++wakeups; atomic_fetch_add(&(*cond)->sequence, 1); futex_wake(&(*cond)->sequence, 1); return 0;
+#else
     ++wakeups; return orbis_error(pthread_cond_signal(&(*cond)->native));
+#endif
 }
 static ABI int32_t cond_broadcast(GuestCond **cond) {
     int32_t e = ensure_cond(cond);
     if (e) return e;
+#ifdef __PROSPERO__
+    ++wakeups; atomic_fetch_add(&(*cond)->sequence, 1); futex_wake(&(*cond)->sequence, 0x7fffffff); return 0;
+#else
     ++wakeups; return orbis_error(pthread_cond_broadcast(&(*cond)->native));
+#endif
 }
 /* PS4 struct timespec is {int64 sec, int64 nsec}, identical to Linux x86-64. */
 typedef struct { int64_t sec, nsec; } GuestTimespec;

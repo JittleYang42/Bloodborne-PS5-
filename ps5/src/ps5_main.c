@@ -59,7 +59,7 @@ static void log_start(void) {
     dup2(log_fd, 1);
     dup2(log_fd, 2);
     setvbuf(stdout, NULL, _IOLBF, 0);
-    setvbuf(stderr, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IOLBF, 0);
     /* Does stdio reach the file through descriptor 1? Test 3 showed descriptor 2 does not, and
      * test 2 that stdout needs reopening by name. */
     struct stat before, after;
@@ -71,7 +71,7 @@ static void log_start(void) {
         freopen(PORT "/last_run.log", "a", stdout);
         freopen(PORT "/last_run.log", "a", stderr);
         setvbuf(stdout, NULL, _IOLBF, 0);
-        setvbuf(stderr, NULL, _IONBF, 0);
+        setvbuf(stderr, NULL, _IOLBF, 0);
         printf("PS5: log reopened through stdio\n");
         fflush(stdout);
     }

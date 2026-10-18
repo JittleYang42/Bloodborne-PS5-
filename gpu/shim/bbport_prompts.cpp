@@ -54,6 +54,10 @@ std::atomic<bool> dirty{false};    // something to write: a new picture, a devic
 int shown = PlayStation;           // Apply's last decision (window thread): what guest memory has
 
 Device Want() {
+#ifdef __PROSPERO__
+    // bbport PS5: a DualSense is the only input: the game's own PlayStation prompts.
+    return PlayStation;
+#endif
     switch (BbSettings::Get().button_prompts.load(std::memory_order_relaxed)) {
     case BbSettings::PromptsPlayStation: return PlayStation;
     case BbSettings::PromptsKeyboard: return Keyboard;

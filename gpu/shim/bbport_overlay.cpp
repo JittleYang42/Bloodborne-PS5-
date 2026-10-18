@@ -57,6 +57,7 @@ bool dirty = false; // settings changed while open: saved on close
 // The game's text dialog (SetTextEntry), guarded by imgui_mutex.
 bool text_entry_active = false;
 std::string text_entry_prompt, text_entry_text;
+int keyboard_row = 0, keyboard_column = 0; // bbport PS5: the on-screen keyboard's key
 float base_scale = 1.0f;
 
 // Present rate for the FPS counter.
@@ -508,8 +509,29 @@ void TextEntryBox() {
     ImGui::Text("%s_", text_entry_text.c_str());
     ImGui::SetWindowFontScale(1.0f);
     ImGui::Separator();
+#ifdef __PROSPERO__
+    // The controller's keyboard: a grid of keys, the highlighted one typed with Cross.
+    ImGui::SetWindowFontScale(1.3f);
+    for (int row = 0; row < kKeyboardRowCount; ++row) {
+        const char* keys = kKeyboardRows[row];
+        for (int column = 0; keys[column]; ++column) {
+            if (column) ImGui::SameLine(0.0f, 10.0f);
+            const bool on = row == keyboard_row && column == keyboard_column;
+            if (on) {
+                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.4f, 1.0f), "[%c]", keys[column]);
+            } else {
+                ImGui::Text(" %c ", keys[column]);
+            }
+        }
+    }
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::Separator();
+    ImGui::TextDisabled("D-pad: choose   Cross: type   Square: erase   Triangle: space");
+    ImGui::TextDisabled("Options: OK   Circle: cancel");
+#else
     ImGui::TextDisabled("Keyboard: type, Backspace to erase, Enter = OK, Esc = cancel");
     ImGui::TextDisabled("Controller: Cross (A) = OK, Circle (B) = cancel");
+#endif
     ImGui::End();
 }
 
@@ -708,6 +730,12 @@ bool Visible() {
 
 bool CapturesInput() {
     return menu_open || text_entry_active;
+}
+
+void SetKeyboardCursor(int row, int column) {
+    std::scoped_lock lock{imgui_mutex};
+    keyboard_row = row;
+    keyboard_column = column;
 }
 
 void SetTextEntry(bool active, const std::string& prompt, const std::string& text) {

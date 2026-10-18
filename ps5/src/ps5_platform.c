@@ -198,3 +198,11 @@ void bb_ps5_signal_host_threads(int sig) {
     for (int i = 0; i < host_thread_count; ++i) pthread_kill(host_threads[i].thread, sig);
     pthread_mutex_unlock(&host_thread_lock);
 }
+
+/* ---- free direct memory (the texture cache's budget on the console) ---- */
+uint64_t bb_ps5_free_direct_bytes(void) {
+    int64_t start = 0;
+    size_t size = 0;
+    if (sceKernelAvailableDirectMemorySize(0, sceKernelGetDirectMemorySize(), 0x10000, &start, &size)) return 0;
+    return size;
+}

@@ -24,6 +24,10 @@
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/texture_cache/tile_manager.h"
 
+#ifdef __PROSPERO__
+extern "C" u64 bb_ps5_free_direct_bytes();
+#endif
+
 namespace VideoCore {
 
 static constexpr u32 MAX_IMAGES = std::numeric_limits<u16>::max();
@@ -1219,6 +1223,22 @@ void TextureCache::GarbageCollectImages() {
             const char* env = std::getenv("BB_GC_BUDGET_MB");
             return env ? std::strtoull(env, nullptr, 10) << 20 : 0;
         }();
+#ifdef __PROSPERO__
+        // bbport PS5: one memory pool for the CPU and the GPU. The driver's usage counts every
+        // buffer it holds (the copies of game memory above all) and stayed over the budget, so
+        // textures used a frame ago were evicted and uploaded again without end (85 GB in three
+        // minutes: stutter and flicker). What the collector can free is textures: they are
+        // compared with what they use plus what the console still has free, less a reserve.
+        if (!forced_budget) {
+            const u64 free_direct = bb_ps5_free_direct_bytes();
+            const u64 reserve = 640_MB;
+            const u64 budget = image_host_bytes + (free_direct > reserve ? free_direct - reserve : 0);
+            total_used_memory = image_host_bytes;
+            trigger_gc_memory = budget / 10 * 7;
+            pressure_gc_memory = budget / 100 * 85;
+            critical_gc_memory = budget / 100 * 95;
+        } else
+#endif
         if (instance.IsIntegrated() || forced_budget) {
             const u64 budget = forced_budget ? forced_budget : instance.GetDeviceMemoryBudgetNow();
             if (budget != 0) {
