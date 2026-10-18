@@ -415,6 +415,17 @@ uintptr_t runtime_thread_resolve(const char *name) {
         if (!strcmp(name,table[i].nid)) return (uintptr_t)table[i].fn;
     return 0;
 }
+#ifndef _WIN32
+/* bbport PS5 diagnostics (ps5/src/ps5_main.c's heartbeat): a signal to every live guest thread. */
+#include <signal.h>
+const char *runtime_thread_dump_name(void) { return current ? current->name : "(host thread)"; }
+void runtime_thread_signal_all(int sig) {
+    pthread_mutex_lock(&lock);
+    for (GuestThread *t=threads; t; t=t->next)
+        if (!t->finished) pthread_kill(t->host,sig);
+    pthread_mutex_unlock(&lock);
+}
+#endif
 void runtime_thread_report(void) {
     pthread_mutex_lock(&lock);
     printf("Runtime: guest threads created=%zu, exited=%zu, joined=%zu\n",created,exited,joined_count);

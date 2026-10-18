@@ -23,6 +23,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <signal.h>
 
 int bb_probe_main(int argc, char **argv);
 int sceSystemServiceHideSplashScreen(void);
@@ -31,50 +32,66 @@ int sceSystemServiceHideSplashScreen(void);
 #define PORT ROOT "/bbport"
 const char *bb_ps5_app_root(void) { return ROOT; }
 
-/* ---- the log: stdout and stderr through one pipe, each line to the file and to klog ---- */
-static FILE *log_file;
-static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
+/* ---- the log ----
+ * stdout and stderr are the log file itself (no pipe or reader thread that could stop and block
+ * the game), line-buffered and unbuffered; every line reaches the file as it is printed. The
+ * first test build's pipe left last_run.log empty. A one-line marker file, written and synced
+ * with plain write(), shows whether the title could write to its folder at all. */
+static int log_fd = -1;
 void bb_ps5_log_line(const char *text) {
-    pthread_mutex_lock(&log_lock);
-    if (log_file) { fputs(text, log_file); fflush(log_file); }
-    pthread_mutex_unlock(&log_lock);
+    if (log_fd >= 0) { ssize_t w = write(log_fd, text, strlen(text)); (void)w; }
     sceKernelDebugOutText(0, text);
-}
-static int log_pipe[2] = {-1, -1};
-static void *log_main(void *unused) {
-    (void)unused;
-    char buffer[4096], line[4096 + 32];
-    size_t used = 0;
-    for (;;) {
-        ssize_t n = read(log_pipe[0], buffer + used, sizeof(buffer) - 1 - used);
-        if (n <= 0) { if (n < 0 && errno == EINTR) continue; break; }
-        used += (size_t)n;
-        size_t start = 0;
-        for (size_t i = 0; i < used; ++i) {
-            if (buffer[i] != '\n' && i - start < sizeof(buffer) - 2) continue;
-            snprintf(line, sizeof(line), "[bbport] %.*s\n", (int)(i - start), buffer + start);
-            bb_ps5_log_line(line);
-            start = i + 1;
-        }
-        memmove(buffer, buffer + start, used - start);
-        used -= start;
-        if (used == sizeof(buffer) - 1) { buffer[used] = 0; bb_ps5_log_line(buffer); used = 0; }
-    }
-    return NULL;
 }
 static void log_start(void) {
     mkdir(PORT, 0777);
-    rename(PORT "/last_run.log", PORT "/previous_run.log");
-    log_file = fopen(PORT "/last_run.log", "w");
-    if (pipe(log_pipe) == 0) {
-        dup2(log_pipe[1], 1);
-        dup2(log_pipe[1], 2);
-        pthread_t thread;
-        pthread_create(&thread, NULL, log_main, NULL);
-        pthread_detach(thread);
+    int marker = open(PORT "/started.txt", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (marker >= 0) {
+        static const char text[] = "bbport PS5 test build " __DATE__ " " __TIME__ " started\n";
+        ssize_t w = write(marker, text, sizeof(text) - 1); (void)w;
+        fsync(marker);
+        close(marker);
     }
+    rename(PORT "/last_run.log", PORT "/previous_run.log");
+    log_fd = open(PORT "/last_run.log", O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0666);
+    if (log_fd < 0) { sceKernelDebugOutText(0, "[bbport] cannot open bbport/last_run.log\n"); return; }
+    dup2(log_fd, 1);
+    dup2(log_fd, 2);
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+    printf("PS5: log open\n");
+    fflush(stdout);
+    /* If the console's stdio does not write through descriptor 1, reopen the streams by name. */
+    struct stat st;
+    if (fstat(log_fd, &st) == 0 && st.st_size == 0) {
+        freopen(PORT "/last_run.log", "a", stdout);
+        freopen(PORT "/last_run.log", "a", stderr);
+        setvbuf(stdout, NULL, _IOLBF, 0);
+        setvbuf(stderr, NULL, _IONBF, 0);
+        printf("PS5: log reopened through stdio\n");
+        fflush(stdout);
+    }
+}
+
+/* ---- heartbeat: what the game is doing when it seems stuck ----
+ * A line every 10 s; at 30 s, 60 s, 120 s and every 2 minutes after, the runtime's counters and
+ * a stack dump of every guest thread (SIGUSR2: guest offsets for the code the game runs). */
+void runtime_report(void);
+void runtime_thread_signal_all(int sig);
+static void *heartbeat_main(void *unused) {
+    (void)unused;
+    for (unsigned seconds = 10;; seconds += 10) {
+        sleep(10);
+        printf("PS5: heartbeat %u s\n", seconds);
+        if (seconds == 30 || seconds == 60 || seconds % 120 == 0) {
+            printf("PS5: ---- runtime state at %u s ----\n", seconds);
+            runtime_report();
+            printf("PS5: ---- guest thread stacks at %u s ----\n", seconds);
+            runtime_thread_signal_all(SIGUSR2);
+            sleep(2);
+            printf("PS5: ---- end of state ----\n");
+        }
+    }
+    return NULL;
 }
 
 /* ---- settings ---- */
@@ -146,6 +163,8 @@ int main(void) {
     char *argv[] = {"bb-probe", PORT "/boot-linked.bin", "--content-profile", PORT "/content.bin",
                     "--patches", patches, "--app0", (char *)game, "--user", PORT "/user",
                     "--timeout", getenv("BB_TIMEOUT") ? getenv("BB_TIMEOUT") : "0", NULL};
+    pthread_t heartbeat;
+    if (pthread_create(&heartbeat, NULL, heartbeat_main, NULL) == 0) pthread_detach(heartbeat);
     int status = bb_probe_main((int)(sizeof(argv) / sizeof(*argv)) - 1, argv);
     printf("PS5: the game ended with status %d\n", status);
     sleep(1);

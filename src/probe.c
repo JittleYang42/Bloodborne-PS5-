@@ -364,7 +364,13 @@ static void dump_frames(ucontext_t *uc) {
         rbp=frame[0]; rip=frame[1];
     }
 }
-static void thread_dump(int sig, siginfo_t *info, void *context) { (void)sig; (void)info; dump_frames(context); }
+const char *runtime_thread_dump_name(void);
+static void thread_dump(int sig, siginfo_t *info, void *context) {
+    (void)sig; (void)info;
+    const char *name=runtime_thread_dump_name();
+    { ssize_t w=write(2,"thread ",7); w=write(2,name,strlen(name)); w=write(2,":\n",2); (void)w; }
+    dump_frames(context);
+}
 static void watchdog(int sig, siginfo_t *info, void *context) {
     (void)info;
     const char head[]="STOP: watchdog timeout; thread stacks:\n";

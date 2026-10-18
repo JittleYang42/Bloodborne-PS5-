@@ -178,7 +178,7 @@ add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/eboot.elf
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tools/link-title.sh ${CMAKE_BINARY_DIR} ${PS5_VULKAN_DIR} ${PS5_PAYLOAD_SDK}
             "$<TARGET_OBJECTS:bbport>"
-    DEPENDS bbport bbgpu absl::flat_hash_map absl::hash atrac9 fmt::fmt miniz Zydis Zycore sirit bb_xxhash
+    DEPENDS bbport bbgpu absl::flat_hash_map absl::hash atrac9 "$<TARGET_OBJECTS:bbport>" "$<TARGET_FILE:bbgpu>" fmt::fmt miniz Zydis Zycore sirit bb_xxhash
             ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan ffx-vulkan::fsr3-vk-framegeneration-3.1.6
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/link-title.sh
     COMMAND_EXPAND_LISTS VERBATIM)
