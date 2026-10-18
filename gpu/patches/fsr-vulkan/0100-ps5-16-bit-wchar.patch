@@ -1,0 +1,51 @@
+diff --git a/src/ffx_1_1_4_portability.hpp b/src/ffx_1_1_4_portability.hpp
+index c7be6c3..f57fd22 100644
+--- a/src/ffx_1_1_4_portability.hpp
++++ b/src/ffx_1_1_4_portability.hpp
+@@ -71,8 +71,8 @@ inline int strcpy_s(char* destination, std::size_t destinationSize, const char*
+ 
+ inline int ffxPortableUtf8ToWide(const char* source, wchar_t* destination, std::size_t destinationSize)
+ {
+-    static_assert(sizeof(wchar_t) >= sizeof(std::uint32_t),
+-                  "The FidelityFX 1.1.4 non-Windows port expects UTF-32 wchar_t");
++    // A 16-bit wchar_t (the PS5's): code points above the BMP become '?' (FFX only converts
++    // ASCII resource and pass names).
+     if (!source || !destination || destinationSize == 0) {
+         return EINVAL;
+     }
+@@ -118,6 +118,9 @@ inline int ffxPortableUtf8ToWide(const char* source, wchar_t* destination, std::
+             destination[0] = L'\0';
+             return ERANGE;
+         }
++        if (sizeof(wchar_t) < sizeof(std::uint32_t) && codePoint > 0xffffu) {
++            codePoint = '?';
++        }
+         destination[output++] = static_cast<wchar_t>(codePoint);
+     }
+     destination[output] = L'\0';
+@@ -126,8 +129,8 @@ inline int ffxPortableUtf8ToWide(const char* source, wchar_t* destination, std::
+ 
+ inline int ffxPortableWideToUtf8(const wchar_t* source, char* destination, std::size_t destinationSize)
+ {
+-    static_assert(sizeof(wchar_t) >= sizeof(std::uint32_t),
+-                  "The FidelityFX 1.1.4 non-Windows port expects UTF-32 wchar_t");
++    // A 16-bit wchar_t (the PS5's): code points above the BMP become '?' (FFX only converts
++    // ASCII resource and pass names).
+     if (!source || !destination || destinationSize == 0) {
+         return EINVAL;
+     }
+@@ -135,7 +138,13 @@ inline int ffxPortableWideToUtf8(const wchar_t* source, char* destination, std::
+     destination[0] = '\0';
+     std::size_t output = 0;
+     for (std::size_t i = 0; source[i]; ++i) {
+-        const std::uint32_t codePoint = static_cast<std::uint32_t>(source[i]);
++        std::uint32_t codePoint = static_cast<std::uint32_t>(source[i]);
++        if (sizeof(wchar_t) < sizeof(std::uint32_t)) {
++            codePoint &= 0xffffu;
++            if (codePoint >= 0xd800u && codePoint <= 0xdfffu) {
++                codePoint = '?';
++            }
++        }
+         if (codePoint > 0x10ffffu || (codePoint >= 0xd800u && codePoint <= 0xdfffu)) {
+             return EILSEQ;
+         }
