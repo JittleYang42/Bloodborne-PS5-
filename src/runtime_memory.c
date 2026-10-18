@@ -16,6 +16,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <errno.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #include <windows.h>
 #elif defined(__PROSPERO__)
@@ -354,7 +355,20 @@ static int host_unmap(uintptr_t address, uint64_t size) {
     sceKernelMunmap((void *)address,size);
     return keep_reserved(address,size);
 }
-static int host_protect(uintptr_t address, uint64_t size, int prot) { return sceKernelMprotect((void *)address,size,prot&7) ? -1 : 0; }
+/* Protection changes in the kernel's 16 KiB pages; a refusal is reported (a few times), since a
+ * GPU-tracked page left read-only makes the guest's store fault forever. */
+static int host_protect(uintptr_t address, uint64_t size, int prot) {
+    uintptr_t start=address&~(uintptr_t)(PS5_KERNEL_PAGE_SIZE-1);
+    uint64_t length=align_up(address+size-start,PS5_KERNEL_PAGE_SIZE);
+    int32_t result=sceKernelMprotect((void *)start,length,prot&7);
+    if (result) {
+        static _Atomic int reported;
+        if (atomic_fetch_add(&reported,1)<8)
+            fprintf(stderr,"Runtime: sceKernelMprotect(%p, 0x%" PRIx64 ", %d) failed (0x%08x)\n",(void *)start,length,prot&7,(unsigned)result);
+        return -1;
+    }
+    return 0;
+}
 /* Released pages read as zero when reused, like the memfd's punched holes. */
 static void host_discard(uint64_t phys, uint64_t size) { memset(backing_base+phys,0,size); }
 #else

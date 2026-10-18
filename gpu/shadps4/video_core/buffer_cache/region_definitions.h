@@ -11,7 +11,14 @@
 namespace VideoCore {
 
 constexpr u64 PAGES_PER_WORD = 64;
+#ifdef __PROSPERO__
+// bbport PS5: the console's kernel protects memory in 16 KiB pages (PS4 pages are 16 KiB too);
+// 4 KiB tracking pages left neighbours of a watched page write-protected without being tracked,
+// and a guest store there faulted forever.
+constexpr u64 BYTES_PER_PAGE = 16_KB;
+#else
 constexpr u64 BYTES_PER_PAGE = 4_KB;
+#endif
 constexpr u64 BYTES_PER_WORD = PAGES_PER_WORD * BYTES_PER_PAGE;
 
 constexpr u64 HIGHER_PAGE_BITS = 24;

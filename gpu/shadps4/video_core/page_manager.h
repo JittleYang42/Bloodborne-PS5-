@@ -25,7 +25,11 @@ enum class PageOp : s8 {
 };
 
 class PageManager {
+#ifdef __PROSPERO__
+    static constexpr size_t PM_PAGE_BITS = 14; // bbport PS5: the kernel's 16 KiB page (region_definitions.h)
+#else
     static constexpr size_t PM_PAGE_BITS = 12;
+#endif
     static constexpr size_t PM_PAGE_SIZE = 1ULL << PM_PAGE_BITS;
 
 public:
