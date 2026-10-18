@@ -98,7 +98,7 @@ mkdir -p "$app/sce_sys" "$app/sce_module" "$app/bbport"
 "$tool" self --sign --in "$work/eboot.elf.new" --out "$app/eboot.bin" --magic 0x1D3D154F
 "$tool" self --inspect --file "$app/eboot.bin" > /dev/null
 cp "$param" "$app/sce_sys/param.json"
-for asset in icon0.png pic0.png pic1.png; do
+for asset in icon0.png pic0.dds pic1.dds snd0.at9; do
     [[ -f $ps5/sce_sys/$asset ]] && cp "$ps5/sce_sys/$asset" "$app/sce_sys/$asset"
 done
 (cd "$vulkan/runtime" && sha256sum --check --strict --quiet libc.prx.sha256)
