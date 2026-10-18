@@ -286,6 +286,11 @@ std::string GetCurrentThreadName() {
     const auto result = Common::UTF16ToUTF8(name);
     LocalFree(name);
     return result;
+#elif defined(__PROSPERO__)
+    // bbport PS5: FreeBSD's spelling, which returns nothing.
+    char name[256] = "";
+    pthread_get_name_np(pthread_self(), name, sizeof(name));
+    return name[0] ? std::string{name} : std::string{"<unknown name>"};
 #else
     char name[256];
     if (pthread_getname_np(pthread_self(), name, sizeof(name)) != 0) {
