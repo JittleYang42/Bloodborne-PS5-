@@ -172,7 +172,7 @@ public:
         return gpu_id;
     }
 
-#if defined(__linux__) || defined(_WIN32)
+#if defined(__linux__) || defined(_WIN32) || defined(__PROSPERO__)
     u32 GetGpuCommandProcessorThreadId() {
         return gpu_tid;
     }
@@ -265,7 +265,7 @@ private:
     std::condition_variable_any submit_cv;
     std::queue<Common::UniqueFunction<void>> command_queue{};
     std::thread::id gpu_id;
-#if defined(__linux__) || defined(_WIN32)
+#if defined(__linux__) || defined(_WIN32) || defined(__PROSPERO__)
     u32 gpu_tid{};
 #endif
     s32 curr_qid{-1};
